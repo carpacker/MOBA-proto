@@ -12,16 +12,18 @@ rather than editing it (note the supersession in both).
 
 | ADR | Title | Status |
 |---|---|---|
+| 0001 | [Simulation tick rate: fixed 30 Hz](0001-tick-rate.md) | Accepted |
+| 0002 | [Sim number system: fixed-point Q16.16](0002-fixed-point-sim-math.md) | Accepted |
+| 0003 | [Handle ABI: 32-bit, 18 index + 14 generation](0003-handle-abi.md) | Accepted |
+| 0004 | [Vulkan loader: hand-loaded dispatch table](0004-vulkan-loader.md) | Accepted |
+| 0005 | [The platform seam](0005-platform-seam.md) | Accepted |
+| 0006 | [Module layout & target naming](0006-module-layout.md) | Accepted |
+| 0007 | [Simulation RNG: pcg32 / xoshiro256**](0007-sim-rng.md) | Accepted |
+| 0008 | [Shader build: GLSL → SPIR-V via glslc](0008-shader-build.md) | Accepted |
+| 0009 | [Error handling: no exceptions, status + asserts](0009-error-handling.md) | Accepted |
+| 0010 | [Asset id scheme: hashed path + generated constants](0010-asset-id-scheme.md) | Accepted |
 | 0011 | [Server-authoritative netcode](0011-server-authoritative-netcode.md) | Accepted |
 
-### Planned (to be written in Phase 0 · M0.1 — see [ROADMAP](../ROADMAP.md))
-
-These cross-cutting contracts are decided once, before any subsystem code:
-`0001` tick rate · `0002` fixed-point format · `0003` handle ABI ·
-`0004` Vulkan loader (hand-load) · `0005` platform seam · `0006` module layout ·
-`0007` sim RNG · `0008` shader build · `0009` error handling · `0010` asset id scheme.
-
-> Numbering note: `0011` exists ahead of `0001–0010` because the lockstep →
-> server-authoritative change was made during the design phase (it reverses an
-> assumption the first design draft baked in). The lower numbers are the
-> foundational contracts the roadmap schedules for Phase 0.
+> Numbering note: `0011` was written first (the lockstep → server-authoritative
+> change made during the design phase); `0001–0010` are the foundational
+> cross-cutting contracts, drafted in Phase 0 · M0.1.
