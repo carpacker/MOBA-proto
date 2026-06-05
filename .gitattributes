@@ -1,0 +1,33 @@
+# Normalize line endings: let Git decide text vs binary by default.
+* text=auto
+
+# Source / text — always LF in the repo.
+*.c     text eol=lf
+*.cc    text eol=lf
+*.cpp   text eol=lf
+*.h     text eol=lf
+*.hpp   text eol=lf
+*.inl   text eol=lf
+*.glsl  text eol=lf
+*.hlsl  text eol=lf
+*.md    text eol=lf
+*.txt   text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+
+# Windows-native scripts — keep CRLF.
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.ps1   text eol=crlf
+
+# Binary assets — never touch.
+*.png   binary
+*.jpg   binary
+*.tga   binary
+*.dds   binary
+*.wav   binary
+*.ogg   binary
+*.fbx   binary
+*.gltf  binary
+*.glb   binary
+*.ttf   binary

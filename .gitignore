@@ -1,0 +1,74 @@
+# ---- Build output ----
+build/
+out/
+bin/
+lib/
+cmake-build-*/
+_deps/
+install/
+
+# ---- Compiled objects / binaries ----
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+
+# ---- Debug / linker artifacts (MSVC) ----
+*.pdb
+*.ilk
+*.exp
+*.idb
+*.map
+
+# ---- CMake ----
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+CMakeUserPresets.json
+compile_commands.json
+
+# ---- Visual Studio / Rider ----
+.vs/
+*.user
+*.suo
+*.vcxproj.user
+*.sln.docstates
+Debug/
+Release/
+x64/
+x86/
+
+# ---- VS Code (keep shared config, ignore local) ----
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# ---- JetBrains ----
+.idea/
+
+# ---- Conan / vcpkg local state ----
+conan.lock
+conanbuildinfo.*
+vcpkg_installed/
+
+# ---- OS cruft ----
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# ---- Game-specific (assets pipeline intermediates, logs, saves) ----
+*.log
+logs/
+*.tmp
+*.cache
