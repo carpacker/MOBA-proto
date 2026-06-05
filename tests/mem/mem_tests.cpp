@@ -1,13 +1,10 @@
 // M1.0 memory tests. Minimal inline harness for now; the self-registering test.h
 // + CTest + headless eng_core_group land in M1.4.
+#include "test.h"
 #include "core/mem.h"
 #include "core/assert.h"
 #include "platform/platform.h"
-#include <cstdio>
 #include <cstdint>
-
-static int g_fail = 0;
-#define CHECK(cond) do { if (!(cond)) { std::printf("  FAIL: %s  (%s:%d)\n", #cond, __FILE__, __LINE__); ++g_fail; } } while (0)
 
 int main(void) {
     std::printf("mem_tests:\n");
@@ -92,7 +89,6 @@ int main(void) {
         platform_arena_release(&s.a[1]);
     }
 
-    if (g_fail) std::printf("mem_tests: %d FAILED\n", g_fail);
-    else        std::printf("mem_tests: all passed\n");
-    return g_fail ? 1 : 0;
+    TEST_SUMMARY("mem_tests");
+    return TEST_RESULT();
 }
