@@ -13,6 +13,9 @@ typedef enum AllocKind { ALLOC_ARENA, ALLOC_STACK, ALLOC_POOL, ALLOC_HEAP } Allo
 // One fn handles alloc (ptr==null), free (new_size==0), realloc (both set).
 typedef void* (*AllocFn)(void* state, void* ptr, size_t old_size, size_t new_size, size_t align);
 typedef struct Allocator { AllocFn fn; void* state; AllocKind kind; } Allocator;
+// INVARIANT: `state` (typically an Arena*) must be a pinned, stable address for the
+// whole lifetime of every container that copies this Allocator by value. Never back a
+// long-lived container with an Arena stored by value somewhere it can move/relocate.
 
 #define MEM_DEFAULT_ALIGN ((size_t)16)   // any scalar / SSE
 

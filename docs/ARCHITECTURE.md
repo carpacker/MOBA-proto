@@ -157,8 +157,8 @@ The rules, binding on every subsystem:
 // core/handle.h — THE handle convention. Index + generation packed in 32 bits.
 typedef uint32_t Handle;                      // generic 32-bit generational handle
 
-#define HANDLE_INDEX_BITS  24u                // 16,777,216 live indices
-#define HANDLE_GEN_BITS    8u                 // 256 reuses before generation wrap
+#define HANDLE_INDEX_BITS  18u                // 262,144 live indices
+#define HANDLE_GEN_BITS    14u                // 16,384 reuses before generation wrap
 #define HANDLE_INDEX_MASK  ((1u << HANDLE_INDEX_BITS) - 1u)
 #define HANDLE_NULL        ((Handle)0)        // index 0 + gen 0 is reserved "none"; gen 0 never valid
 
@@ -176,7 +176,7 @@ typedef struct { Handle h; } MaterialHandle;
 typedef struct { Handle h; } AssetHandle;
 ```
 
-- **24+8 split** is chosen as the project-wide default: ample index space for hundreds-to-thousands of objects, with 256 generations per slot. (The sim previously wanted 20+12 for more reuse generations; 8 bits is sufficient given deferred destruction at tick boundaries and the per-match lifetime of most entities — recorded as a deliberate decision in the handle ADR.)
+- **18+14 split** is the project-wide default (ADR-0003): 262,144 live indices — ample for a MOBA/RTS hybrid's low-thousands peak — and **16,384 generations per slot**, weighted toward generation bits because the hybrid's heavy projectile/effect churn recycles slots far more than a typical MOBA. Index exhaustion is a hard failure; generation wrap is soft and debug-asserted — so index is provisioned generously and generation amply. (The original draft used 24+8; superseded by ADR-0003 after the genre was clarified.)
 - **Generation 0 is never valid;** a freshly allocated slot starts at generation 1. `HANDLE_NULL` (all zero) is the universal "none" sentinel — there is no all-ones variant.
 - **`EntityId` is unsigned** everywhere (the earlier `int32_t EntityId` in gameplay is corrected to this wrapper).
 - On destroy, a slot's generation increments, so any stale handle fails validation deterministically — use-after-free becomes a detected condition, and (critically) no allocation address ever leaks into sim state.

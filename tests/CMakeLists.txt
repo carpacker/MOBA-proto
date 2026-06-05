@@ -10,6 +10,10 @@ add_executable(math_tests math/math_tests.cpp)
 target_include_directories(math_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(math_tests PRIVATE eng::math moba_warnings moba_options)
 
+add_executable(container_tests containers/container_tests.cpp)
+target_include_directories(container_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(container_tests PRIVATE eng::core eng::platform moba_warnings moba_options)
+
 # Determinism suite, built TWICE with different float models. The golden hash is
 # integer-only, so both must produce the identical value (ADR-0002 / M1.2 DoD).
 add_executable(det_tests det/det_tests.cpp)
