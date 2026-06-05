@@ -14,8 +14,37 @@ RTS-class game engine.
 
 ## Building
 
-_TBD — build system and toolchain are being chosen._
+**Prerequisites**
+- Visual Studio 2026 with the **Desktop development with C++** workload (provides
+  MSVC, plus bundled CMake ≥ 3.28 and Ninja). Standalone CMake + Ninja also work.
+- The **LunarG Vulkan SDK** — not needed yet (the `render` module is an empty
+  skeleton), but **required from Phase 2** (Vulkan bring-up). Install it so
+  `VULKAN_SDK` is set before then.
+
+**Build** — `cl`, `cmake`, and `ninja` must be on `PATH`, so build from a *Developer*
+shell (or `call vcvars64.bat` first):
+
+```bat
+cmake --preset dev                          :: configure (Ninja Multi-Config)
+cmake --build build --config Debug          :: or RelWithDebInfo / Release
+```
+
+`--preset ci` builds with warnings-as-errors (`/WX`). Configs: **Debug** (daily),
+**RelWithDebInfo** (profiling / the build you play), **Release** (`/O2 /GL`+`/LTCG`).
+See `docs/DECISIONS/` for the build contracts (ADR-0004/0006/0008/0009).
 
 ## Layout
 
-_TBD — to be defined as the engine takes shape._
+```
+engine/        the engine, one static lib per module (the CMake link graph = the architecture)
+  core/        arenas, containers, handle.h, sim_config.h, log/assert  (leaf)
+  math/        fix.h (Q16.16), rng.h, vec/mat/quat                     (leaf)
+  platform/    the OS seam (Win32): window, input, timing, files, sockets, Vulkan surface
+  render/      raw Vulkan behind a thin renderer seam
+  (serialize / assets / sim / net arrive in their phases)
+cmake/         CompilerWarnings, EngineOptions, CompileShaders helpers
+game/ tools/   the game exe, sandbox, asset cooker
+shaders/ assets/ tests/
+docs/          ARCHITECTURE.md, ROADMAP.md, DECISIONS/ (ADRs)
+```
+

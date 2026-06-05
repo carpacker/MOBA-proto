@@ -1,0 +1,29 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "dev",
+      "displayName": "Dev — Ninja Multi-Config (MSVC)",
+      "description": "Single build dir; switch config at build time. Run from a VS Developer shell (vcvars) so cl/ninja are on PATH.",
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_CONFIGURATION_TYPES": "Debug;RelWithDebInfo;Release",
+        "MOBA_WERROR": "OFF"
+      }
+    },
+    {
+      "name": "ci",
+      "displayName": "CI — like dev but warnings are errors",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build-ci",
+      "cacheVariables": { "MOBA_WERROR": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug",   "configurePreset": "dev", "configuration": "Debug" },
+    { "name": "reldbg",  "configurePreset": "dev", "configuration": "RelWithDebInfo" },
+    { "name": "release", "configurePreset": "dev", "configuration": "Release" }
+  ]
+}
