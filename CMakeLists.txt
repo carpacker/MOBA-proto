@@ -44,8 +44,9 @@ add_subdirectory(engine/math)
 add_subdirectory(engine/platform)
 add_subdirectory(engine/render)
 
-# --- Tools ---
+# --- Tools & tests ---
 add_subdirectory(tools/sandbox)         # M0.3: window + message loop
-# serialize / assets / sim / net + cooker + tests arrive in their phases.
+add_subdirectory(tests)                 # M1.0: mem_tests (test.h harness + CTest at M1.4)
+# serialize / assets / sim / net + cooker arrive in their phases.
 
 message(STATUS "moba spine configured — modules: eng_core eng_math eng_platform eng_render")

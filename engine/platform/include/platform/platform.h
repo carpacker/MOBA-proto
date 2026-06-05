@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "platform/platform_input.h"
+#include "core/mem.h"     // Arena / ScratchPad (platform wires OS pages into them)
 // THE OS seam (ADR-0005, ARCHITECTURE §4). Engine modules include only this
 // (+ platform_input.h, and later platform_vulkan.h). Win32 impl in src/win32/.
 //
@@ -38,6 +39,12 @@ PlatformMemoryBlock plat_mem_reserve(size_t reserve_bytes);   // MEM_RESERVE
 bool                plat_mem_commit (PlatformMemoryBlock*, size_t new_committed);
 void                plat_mem_release(PlatformMemoryBlock*);
 size_t              plat_mem_page_size(void);
+
+// ---- OS-page-backed arenas (bridges plat_mem into a core Arena; ADR-0005) ----
+// Reserves `reserve_bytes` of address space; the arena commits pages on growth.
+bool platform_arena_reserve     (Arena* out, size_t reserve_bytes);
+bool platform_scratchpad_reserve(ScratchPad* out, size_t each_bytes);
+void platform_arena_release     (Arena*);   // VirtualFree the arena's reservation
 
 // ---- Diagnostics ----
 void platform_log  (const char* fmt, ...);

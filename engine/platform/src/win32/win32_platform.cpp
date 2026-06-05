@@ -285,6 +285,29 @@ void plat_mem_release(PlatformMemoryBlock* b) {
     if (b && b->base) { VirtualFree(b->base, 0, MEM_RELEASE); b->base = nullptr; b->committed = 0; b->reserved = 0; }
 }
 
+// ---- OS-page-backed arenas: the commit callback core's Arena injects (ADR-0005) ----
+static bool win32_arena_commit(void* base, size_t new_committed) {
+    return VirtualAlloc(base, new_committed, MEM_COMMIT, PAGE_READWRITE) != nullptr;
+}
+bool platform_arena_reserve(Arena* out, size_t reserve_bytes) {
+    PlatformMemoryBlock blk = plat_mem_reserve(reserve_bytes);
+    if (!blk.base) return false;
+    arena_init(out, blk.base, blk.reserved, 0, win32_arena_commit, plat_mem_page_size());
+    return true;
+}
+bool platform_scratchpad_reserve(ScratchPad* out, size_t each_bytes) {
+    if (!platform_arena_reserve(&out->a[0], each_bytes)) return false;
+    if (!platform_arena_reserve(&out->a[1], each_bytes)) { platform_arena_release(&out->a[0]); return false; }
+    out->cur = 0;
+    return true;
+}
+void platform_arena_release(Arena* a) {
+    if (a && a->base) {
+        VirtualFree(a->base, 0, MEM_RELEASE);
+        a->base = nullptr; a->offset = 0; a->committed = 0; a->reserved = 0;
+    }
+}
+
 // ---- Diagnostics ------------------------------------------------------------
 void platform_log(const char* fmt, ...) {
     char buf[1024];

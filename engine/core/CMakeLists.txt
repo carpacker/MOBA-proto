@@ -1,6 +1,10 @@
-# eng_core — leaf module: arenas, containers, log, assert, handle.h, sim_config.h,
-# test harness (Phase 1). M0.2: placeholder TU so the lib + link graph exist.
-add_library(eng_core STATIC src/core.cpp)
+# eng_core — leaf foundation: assertions, memory (arenas/allocator); containers,
+# handle.h, sim_config.h, log, test harness arrive across Phase 1. Depends on
+# nothing (the OS page backend is injected into virtual arenas, ADR-0005).
+add_library(eng_core STATIC
+    src/core.cpp
+    src/core_assert.cpp
+    src/mem/arena.cpp)
 add_library(eng::core ALIAS eng_core)
 
 target_include_directories(eng_core
