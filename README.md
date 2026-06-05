@@ -3,8 +3,14 @@
 A multiplayer online battle arena built **from scratch in C++**, on a custom
 RTS-class game engine.
 
-> 🚧 **Status:** Day one. Repository just initialized. Engine architecture and
-> project structure are being designed — nothing here is final yet.
+> 🚧 **Status:** Early development. **Phase 0 complete** (build spine, ADRs, Win32
+> window) and **Phase 1 core in progress** — memory arenas, float math, fixed-point
+> deterministic sim math, and containers are done and tested; the test harness is
+> next. Builds clean under `/WX`; ~88k test checks green across Debug/Release.
+>
+> See [`docs/JOURNAL.md`](docs/JOURNAL.md) for the session log,
+> [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan, and
+> [`docs/DECISIONS/`](docs/DECISIONS/) for the architecture decisions.
 
 ## Goals
 
