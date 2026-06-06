@@ -26,25 +26,23 @@ jobs:
       matrix:
         config: [Debug, Release]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      # Put cl/link/lib on PATH so the Ninja Multi-Config preset detects MSVC.
-      - name: Set up MSVC (x64)
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Tool versions
+      # MSVC is set up WITHOUT a third-party Node action: ilammy/msvc-dev-cmd has no
+      # Node 24 release and GitHub is retiring Node 20 actions, so instead we discover
+      # the VS install with vswhere and source vcvars64 in-line. This is Node-free and
+      # robust across the windows-latest VS2022 -> VS2026 image migration, and mirrors
+      # the local tools/hooks/ctest-gate.bat. One combined step because the vcvars env
+      # does not persist across separate run: steps. `|| exit /b 1` propagates early
+      # failures (cmd does not stop on error by default); the final ctest decides the job.
+      - name: Build + test (${{ matrix.config }})
+        shell: cmd
         run: |
-          cmake --version
-          ninja --version
-          cl 2>&1 | Select-Object -First 1
-
-      - name: Configure (ci preset, /WX)
-        run: cmake --preset ci
-
-      - name: Build (${{ matrix.config }})
-        run: cmake --build build-ci --config ${{ matrix.config }}
-
-      - name: Test (${{ matrix.config }})
-        # --no-tests=error: ctest exits 0 if it finds no tests; without this a broken
-        # test registration would let the job go green having executed nothing.
-        run: ctest --test-dir build-ci -C ${{ matrix.config }} --output-on-failure --no-tests=error
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VSPATH=%%i"
+          if not defined VSPATH ( echo No Visual Studio install found & exit /b 1 )
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat" || exit /b 1
+          cmake --version || exit /b 1
+          ninja --version || exit /b 1
+          cmake --preset ci || exit /b 1
+          cmake --build build-ci --config ${{ matrix.config }} || exit /b 1
+          ctest --test-dir build-ci -C ${{ matrix.config }} --output-on-failure --no-tests=error
