@@ -78,6 +78,18 @@ inline int run_all(int argc, char** argv) {
     }
     if (list) return 0;
 
+    // A run that executed ZERO cases is never a pass — it means a --suite/--filter
+    // selector drifted from the registered names, or (worse) the linker dropped the
+    // registrars and there are no cases at all (the LANDMINE above). Fail loudly with
+    // a distinct code so CTest can't report a silent green over no coverage.
+    if (n_run == 0) {
+        std::printf("\nERROR: 0 tests ran");
+        if (suite)  std::printf(" (--suite %s)", suite);
+        if (filter) std::printf(" (--filter %s)", filter);
+        std::printf(" — selector drift, or no cases registered (dropped registrars?)\n");
+        return 2;
+    }
+
     std::printf("\n%d test(s), %d check(s), %d failed", n_run, checks(), fails());
     std::printf(n_failed ? "  -> %d TEST(S) FAILED\n" : "  -> OK\n", n_failed);
     return fails() ? 1 : 0;

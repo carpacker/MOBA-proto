@@ -10,10 +10,12 @@ on:
     branches: [main]
   pull_request:
 
-# Newer pushes to a PR cancel in-flight runs for the same ref.
+# Newer pushes to a PR supersede in-flight runs for the same ref. NEVER cancel a
+# main-branch run, though — each commit on main should get a completed CI result
+# (a cancelled run is neither green nor a usable baseline).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   windows-msvc:
@@ -43,4 +45,6 @@ jobs:
         run: cmake --build build-ci --config ${{ matrix.config }}
 
       - name: Test (${{ matrix.config }})
-        run: ctest --test-dir build-ci -C ${{ matrix.config }} --output-on-failure
+        # --no-tests=error: ctest exits 0 if it finds no tests; without this a broken
+        # test registration would let the job go green having executed nothing.
+        run: ctest --test-dir build-ci -C ${{ matrix.config }} --output-on-failure --no-tests=error

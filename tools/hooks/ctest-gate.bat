@@ -24,7 +24,9 @@ if not exist build-ci\CMakeCache.txt (
 cmake --build build-ci --config Debug
 if errorlevel 1 ( set "MSG=build failed -- warnings are errors under /WX." & goto fail )
 
-ctest --test-dir build-ci -C Debug --output-on-failure
+rem --no-tests=error: ctest exits 0 if it finds NO tests -- that would let the gate go
+rem green having run nothing (e.g. test registration silently broke). Make it fail.
+ctest --test-dir build-ci -C Debug --output-on-failure --no-tests=error
 set "RC=%errorlevel%"
 popd
 exit /b %RC%

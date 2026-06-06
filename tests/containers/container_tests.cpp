@@ -16,7 +16,8 @@ struct Obj { uint32_t a, b; };   // >= 4 bytes for the intrusive free list
 // out an Allocator, release on scope exit. No exceptions are thrown, so the dtor is
 // safe under /EHs-c-.
 struct TestArena {
-    Arena arena;
+    Arena arena{};   // zero-init: a failed reserve leaves base==null, so the dtor's
+                     // platform_arena_release is a safe no-op (no read of indeterminate base)
     Allocator al;
     TestArena() {
         CHECK(platform_arena_reserve(&arena, (size_t)64 * 1024 * 1024));
