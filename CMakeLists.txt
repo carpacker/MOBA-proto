@@ -47,6 +47,7 @@ add_subdirectory(engine/render)
 # --- Tools & tests ---
 enable_testing()                        # register CTest tests (M1.4); must be top-level
 add_subdirectory(tools/sandbox)         # M0.3: window + message loop
+add_subdirectory(tools/visualize)       # BMP dumps of the fixed-point math vs libm
 add_subdirectory(tests)                 # M1.4: self-registering harness + CTest suites
 # serialize / assets / sim / net + cooker arrive in their phases.
 

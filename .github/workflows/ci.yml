@@ -45,4 +45,32 @@ jobs:
           ninja --version || exit /b 1
           cmake --preset ci || exit /b 1
           cmake --build build-ci --config ${{ matrix.config }} || exit /b 1
-          ctest --test-dir build-ci -C ${{ matrix.config }} --output-on-failure --no-tests=error
+          ctest --test-dir build-ci -C ${{ matrix.config }} --output-on-failure --no-tests=error --output-junit "%CD%\ctest-${{ matrix.config }}.xml"
+
+      # Render the per-test results into the GitHub run summary (native — no third-party
+      # action, consistent with the Node-free setup). Reads the JUnit XML ctest wrote;
+      # always() so a red run still reports. On an [xml] element $c.name is the TAG name,
+      # so attributes are read via GetAttribute.
+      - name: Test report (${{ matrix.config }})
+        if: always()
+        shell: pwsh
+        run: |
+          $xml = "ctest-${{ matrix.config }}.xml"
+          $sum = $env:GITHUB_STEP_SUMMARY
+          if (-not (Test-Path $xml)) { "No JUnit XML produced ($xml)." | Out-File -Append $sum; exit 0 }
+          [xml]$doc = Get-Content $xml
+          $cases = @($doc.SelectNodes('//testcase'))
+          $fails = @($cases | Where-Object { $_.GetAttribute('status') -eq 'fail' -or $_.SelectSingleNode('failure') })
+          $lines = @()
+          $lines += "## Tests - ${{ matrix.config }}"
+          $lines += ""
+          $lines += "**$($cases.Count) tests, $($fails.Count) failed.**"
+          $lines += ""
+          $lines += "| Test | Result | Time (s) |"
+          $lines += "|------|--------|----------|"
+          foreach ($c in $cases) {
+            $bad = ($c.GetAttribute('status') -eq 'fail') -or ($null -ne $c.SelectSingleNode('failure'))
+            $icon = if ($bad) { ':x:' } else { ':white_check_mark:' }
+            $lines += "| $($c.GetAttribute('name')) | $icon | $($c.GetAttribute('time')) |"
+          }
+          ($lines -join "`n") | Out-File -Append $sum
