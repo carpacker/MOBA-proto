@@ -1,0 +1,46 @@
+name: ci
+
+# Mirror the local pre-push gate in the cloud: a /WX build + ctest on Windows/MSVC.
+# Runs across Debug AND Release so the determinism golden is exercised over the full
+# {/fp:precise, /fp:fast} x {Debug, Release} matrix the determinism contract requires
+# (ADR-0002): the det_precise/det_fast suites build the same source under both float
+# models, and this matrix adds the config axis on top.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Newer pushes to a PR cancel in-flight runs for the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-msvc:
+    name: windows-msvc (${{ matrix.config }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false          # want both Debug and Release signals, not just the first failure
+      matrix:
+        config: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Put cl/link/lib on PATH so the Ninja Multi-Config preset detects MSVC.
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Tool versions
+        run: |
+          cmake --version
+          ninja --version
+          cl 2>&1 | Select-Object -First 1
+
+      - name: Configure (ci preset, /WX)
+        run: cmake --preset ci
+
+      - name: Build (${{ matrix.config }})
+        run: cmake --build build-ci --config ${{ matrix.config }}
+
+      - name: Test (${{ matrix.config }})
+        run: ctest --test-dir build-ci -C ${{ matrix.config }} --output-on-failure
