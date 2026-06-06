@@ -20,6 +20,11 @@ CMakeLists.txt text eol=lf
 *.cmd   text eol=crlf
 *.ps1   text eol=crlf
 
+# Shell scripts & git hooks run through sh — must stay LF even on Windows, or the
+# CR breaks the shebang/`\r` (the extensionless hook would otherwise get CRLF).
+*.sh                 text eol=lf
+tools/hooks/pre-push text eol=lf
+
 # Binary assets — never touch.
 *.png   binary
 *.jpg   binary
