@@ -13,7 +13,8 @@ self-registering harness, wire it into CTest behind a headless aggregate target,
 stand up the pre-push gate that makes the whole suite a push-blocking contract.
 **Outcome:** **M1.4 complete → Phase 1 complete.** `ctest` is green in ~0.5s; the gate
 was proven to block on a deliberately-injected failing `CHECK` and pass once reverted.
-Working tree has the harness + hook changes staged for commit (not yet committed).
+Merged to `main` via **PR #2** (squash `91b9c1d`), with GitHub Actions CI now mirroring
+the gate and an adversarial pre-merge review having found + fixed 5 issues first.
 
 ### What was built
 
@@ -50,8 +51,35 @@ Working tree has the harness + hook changes staged for commit (not yet committed
   Reverted → green, exit 0. Ran the hook the way git invokes it (args + stdin) to
   confirm the sh→cmd→bat handoff.
 
+### CI + adversarial pre-merge review
+
+After the harness landed, CI and a pre-merge review were added before merging PR #2:
+
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): Windows/MSVC, the `ci` `/WX`
+  preset + `ctest`, across a **Debug × Release** matrix — so the determinism golden is
+  checked over `{/fp:precise, /fp:fast} × {Debug, Release}`. Verified each step actually
+  ran (not a skipped/empty green); `/WX` is clean on the runner's VS2022 as well as local
+  VS18. MSVC is set up **Node-free** via `vswhere` + `vcvars` (no third-party action —
+  `ilammy/msvc-dev-cmd` has no Node 24 release and GitHub is retiring Node 20 actions;
+  `actions/checkout` pinned to v5). This also survives the `windows-latest` → VS2026
+  image migration and mirrors `tools/hooks/ctest-gate.bat`.
+- **Adversarial pre-merge review** (a 12-agent workflow, 5 lenses, each finding then
+  verified by a skeptic) found **5 real issues, all fixed before merge**:
+  1. The gate could **report green while running zero tests** (`ctest` exits 0 on an
+     empty set) → `--no-tests=error` in both the hook and CI.
+  2. The harness now **fails (exit 2) on any zero-run** — catches `--suite`/`--filter`
+     selector drift *and* the dropped-registrars landmine.
+  3. `TestArena` zero-inits its `Arena` (latent UB on a reserve failure).
+  4. CI no longer cancels a required `main` run (`cancel-in-progress` scoped to non-main).
+  Two findings were correctly **dismissed** (the `cygpath` fallback works because
+  `git rev-parse --show-toplevel` yields a `C:/…` path cmd accepts; floating action tags
+  are a hardening preference, not a bug).
+
 ### Notes / gotchas
 
+- **Keep hook/batch scripts ASCII-only:** a stray em-dash (`—`) in `ctest-gate.bat`
+  made `cmd`'s byte-parser eat the leading chars of following lines (`rem`→`m`,
+  `setlocal`→`tlocal`). YAML/C++ comments tolerate UTF-8; `.bat` files do not.
 - **`ctest-gate.bat` paren trap:** `)` inside an `echo` text *inside* an `if (…)` block
   closes the block early (`. was unexpected`). Rewrote with `goto :fail` + a single
   `%MSG%` echo, and grouped `if cond ( set … & goto … )` (bare `&` runs the next
@@ -62,9 +90,9 @@ Working tree has the harness + hook changes staged for commit (not yet committed
   (`plat_mem_*`, the one OS dep of core's arenas — ADR-0005). Its window/input code is
   linked-but-unused in tests. Splitting the page backend out of the Win32 window TU so
   the group is *literally* window-free is a deferred cleanup (see backlog).
-- Hook activated locally via `git config core.hooksPath tools/hooks`. When committing,
-  mark the hook executable (`git update-index --chmod=+x tools/hooks/pre-push`) for
-  non-Windows clones.
+- Hook activated locally via `git config core.hooksPath tools/hooks`; committed mode
+  `100755` (`git update-index --chmod=+x`) and pinned `eol=lf` in `.gitattributes` so
+  the `sh` shebang survives a fresh non-Windows clone.
 
 ### Deferred backlog (carried forward)
 
