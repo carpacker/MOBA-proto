@@ -3,6 +3,7 @@
 //   sandbox                exits when you close the window (or press Esc)
 //   sandbox --frames N     auto-quits after N frames (smoke test)
 #include "platform/platform.h"
+#include "render/renderer.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -20,6 +21,10 @@ int main(int argc, char** argv) {
 
     PlatformWindow* win = platform_window_open(&desc);
     if (!win) { std::printf("sandbox: failed to open window\n"); return 1; }
+
+    // M2.0: bring up the renderer (logs the GPU; null backend when built without Vulkan).
+    Renderer* rnd = renderer_create(win);
+    if (!rnd) std::printf("sandbox: renderer unavailable (null backend / no Vulkan)\n");
 
     const uint64_t freq = platform_time_frequency();
     uint64_t prev  = platform_time_ticks();
@@ -54,6 +59,7 @@ int main(int argc, char** argv) {
     }
 
     double elapsed = (double)(platform_time_ticks() - start) / (double)freq;
+    renderer_destroy(rnd);
     platform_window_close(win);
     std::printf("sandbox: clean exit after %ld frames (%.2fs)\n", frame, elapsed);
     return 0;
