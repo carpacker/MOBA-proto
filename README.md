@@ -3,10 +3,12 @@
 A multiplayer online battle arena built **from scratch in C++**, on a custom
 RTS-class game engine.
 
-> 🚧 **Status:** Early development. **Phase 0 complete** (build spine, ADRs, Win32
-> window) and **Phase 1 core in progress** — memory arenas, float math, fixed-point
-> deterministic sim math, and containers are done and tested; the test harness is
-> next. Builds clean under `/WX`; ~88k test checks green across Debug/Release.
+> 🚧 **Status:** Early development. **Phase 0 and Phase 1 complete** — build spine,
+> ADRs, Win32 window, memory arenas, float math, fixed-point deterministic sim math,
+> containers, and (M1.4) a self-registering test harness wired into CTest and a
+> pre-push gate. Builds clean under `/WX`; **`ctest` green in ~0.5s** (56 tests /
+> ~172k checks, determinism golden verified across `/fp:precise` + `/fp:fast`).
+> **Next: Phase 2 — raw Vulkan bring-up** (install the LunarG Vulkan SDK first).
 >
 > See [`docs/JOURNAL.md`](docs/JOURNAL.md) for the session log,
 > [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan, and
@@ -38,6 +40,28 @@ cmake --build build --config Debug          :: or RelWithDebInfo / Release
 `--preset ci` builds with warnings-as-errors (`/WX`). Configs: **Debug** (daily),
 **RelWithDebInfo** (profiling / the build you play), **Release** (`/O2 /GL`+`/LTCG`).
 See `docs/DECISIONS/` for the build contracts (ADR-0004/0006/0008/0009).
+
+## Testing
+
+Tests use a small self-registering harness (`tests/test.h`: `TEST()`/`CHECK`, no
+exceptions/STL) and run under CTest:
+
+```bat
+cmake --preset ci                                   :: /WX build dir
+cmake --build build-ci --config Debug
+ctest --test-dir build-ci -C Debug --output-on-failure
+```
+
+Suites are `mem`, `math`, `containers`, and the determinism golden hash built twice
+(`det_precise` `/fp:precise` + `det_fast` `/fp:fast` — both must match). To run one
+binary directly: `engine_tests.exe --suite math` (or `--filter`, `--list`).
+
+A **pre-push hook** runs the same `/WX` build + `ctest` and blocks the push on red.
+Activate it once per clone (it shells out to `vcvars` so it works from any shell):
+
+```bat
+git config core.hooksPath tools/hooks
+```
 
 ## Layout
 

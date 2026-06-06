@@ -45,8 +45,9 @@ add_subdirectory(engine/platform)
 add_subdirectory(engine/render)
 
 # --- Tools & tests ---
+enable_testing()                        # register CTest tests (M1.4); must be top-level
 add_subdirectory(tools/sandbox)         # M0.3: window + message loop
-add_subdirectory(tests)                 # M1.0: mem_tests (test.h harness + CTest at M1.4)
+add_subdirectory(tests)                 # M1.4: self-registering harness + CTest suites
 # serialize / assets / sim / net + cooker arrive in their phases.
 
 message(STATUS "moba spine configured — modules: eng_core eng_math eng_platform eng_render")

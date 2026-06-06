@@ -1,27 +1,44 @@
-# Engine tests. Minimal shared helpers in tests/test.h (CHECK/CHECK_APPROX); the
-# self-registering test.h harness + CTest + headless eng_core_group land in M1.4.
-# ${CMAKE_CURRENT_SOURCE_DIR} on the include path so each suite finds "test.h".
+# Engine tests (M1.4): self-registering test.h harness + CTest. Suite sources are
+# compiled STRAIGHT INTO each test exe — never into a static library — because the
+# linker discards object files with no referenced symbols, which would silently drop
+# the TEST() registrars (see the LANDMINE note in tests/test.h). test_main.cpp owns
+# main() and runs the registered cases. ${CMAKE_CURRENT_SOURCE_DIR} on the include
+# path so every suite finds "test.h".
 
-add_executable(mem_tests mem/mem_tests.cpp)
-target_include_directories(mem_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(mem_tests PRIVATE eng::core eng::platform moba_warnings moba_options)
+# --- Headless aggregate: the non-window/non-Vulkan engine libs the test binary links.
+# eng_platform is here ONLY for its OS page-allocator backend (plat_mem_*, the one OS
+# dependency core's arenas need — ADR-0005); its window/input code is never called by
+# tests. As sim/net/assets land they join this group, with their OS impls kept in the
+# app layer (ADR-0006) so headless testing holds. Splitting the page backend out of
+# the Win32 window TU so this group is literally window-free is a later cleanup.
+add_library(engine_core_group INTERFACE)
+target_link_libraries(engine_core_group INTERFACE eng::core eng::math eng::platform)
 
-add_executable(math_tests math/math_tests.cpp)
-target_include_directories(math_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(math_tests PRIVATE eng::math moba_warnings moba_options)
+# --- engine_tests: the headless aggregate suite (mem + math + containers) ---
+add_executable(engine_tests
+    test_main.cpp
+    mem/mem_tests.cpp
+    math/math_tests.cpp
+    containers/container_tests.cpp)
+target_include_directories(engine_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(engine_tests PRIVATE engine_core_group moba_warnings moba_options)
 
-add_executable(container_tests containers/container_tests.cpp)
-target_include_directories(container_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(container_tests PRIVATE eng::core eng::platform moba_warnings moba_options)
-
-# Determinism suite, built TWICE with different float models. The golden hash is
-# integer-only, so both must produce the identical value (ADR-0002 / M1.2 DoD).
-add_executable(det_tests det/det_tests.cpp)
+# --- determinism: the SAME source built twice under different float models. The
+#     golden hash is integer-only, so /fp:precise and /fp:fast must agree (ADR-0002).
+add_executable(det_tests test_main.cpp det/det_tests.cpp)
 target_include_directories(det_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(det_tests PRIVATE eng::math moba_warnings moba_options)
 target_compile_options(det_tests PRIVATE /fp:precise)
 
-add_executable(det_tests_fastfp det/det_tests.cpp)
+add_executable(det_tests_fastfp test_main.cpp det/det_tests.cpp)
 target_include_directories(det_tests_fastfp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(det_tests_fastfp PRIVATE eng::math moba_warnings moba_options)
 target_compile_options(det_tests_fastfp PRIVATE /fp:fast)
+
+# --- CTest registration: one entry per suite so a red test names the right module.
+# enable_testing() lives at the top level (required for add_test to register).
+add_test(NAME mem         COMMAND engine_tests --suite mem)
+add_test(NAME math        COMMAND engine_tests --suite math)
+add_test(NAME containers  COMMAND engine_tests --suite containers)
+add_test(NAME det_precise COMMAND det_tests)        # /fp:precise golden hash
+add_test(NAME det_fast    COMMAND det_tests_fastfp) # /fp:fast    golden hash (must match)
