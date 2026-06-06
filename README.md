@@ -3,12 +3,15 @@
 A multiplayer online battle arena built **from scratch in C++**, on a custom
 RTS-class game engine.
 
-> 🚧 **Status:** Early development. **Phase 0 and Phase 1 complete** — build spine,
-> ADRs, Win32 window, memory arenas, float math, fixed-point deterministic sim math,
-> containers, and (M1.4) a self-registering test harness wired into CTest and a
-> pre-push gate. Builds clean under `/WX`; **`ctest` green in ~0.5s** (56 tests /
-> ~172k checks, determinism golden verified across `/fp:precise` + `/fp:fast`).
-> **Next: Phase 2 — raw Vulkan bring-up** (install the LunarG Vulkan SDK first).
+> 🚧 **Status:** Early development. **Phases 0–1 complete; Phase 2 underway.** Build
+> spine, ADRs, Win32 window, memory arenas, float/fixed-point math, containers, and a
+> self-registering test harness on CTest + a pre-push gate (`ctest` green in ~0.5s — 56
+> tests / ~172k checks, determinism golden across `/fp:precise` + `/fp:fast`), plus
+> GitHub Actions CI (Windows MSVC, `/WX`, Debug + Release).
+> **Phase 2 / M2.0 (clear the screen) is functionally done:** a hand-loaded raw-Vulkan
+> renderer (ADR-0004) brings up instance → device → swapchain and **clears the window
+> to an animated color, validation-clean** (verified on a GTX 1070). **Next: M2.1 —
+> first triangle.** Run it: `build-ci\tools\sandbox\Debug\sandbox.exe`.
 >
 > See [`docs/JOURNAL.md`](docs/JOURNAL.md) for the session log,
 > [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan, and
