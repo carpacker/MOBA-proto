@@ -19,6 +19,17 @@
 #include "platform/platform.h"
 #include "platform/platform_vulkan.h"
 
+// Vulkan surface creation lives here (HWND never crosses into render, ADR-0005). Only
+// compiled when the SDK is present; the headless/CI build stays Vulkan-header-free.
+#if defined(MOBA_HAVE_VULKAN)
+#  define VK_NO_PROTOTYPES
+#  define VK_USE_PLATFORM_WIN32_KHR
+#  pragma warning(push)
+#  pragma warning(disable: 4255)
+#  include <vulkan/vulkan.h>
+#  pragma warning(pop)
+#endif
+
 // ---- Internal window state (the opaque PlatformWindow) ----
 struct PlatformWindow {
     HWND      hwnd;
@@ -319,6 +330,28 @@ PlatformVkProc platform_vk_get_loader(void) {
     }
     return (PlatformVkProc)GetProcAddress(vklib, "vkGetInstanceProcAddr");
 }
+
+#if defined(MOBA_HAVE_VULKAN)
+bool platform_vk_create_surface(PlatformWindow* window, void* instance, unsigned long long* out_surface) {
+    if (!window || !instance || !out_surface) return false;
+    PFN_vkGetInstanceProcAddr gipa = (PFN_vkGetInstanceProcAddr)platform_vk_get_loader();
+    if (!gipa) return false;
+    VkInstance inst = (VkInstance)instance;
+    PFN_vkCreateWin32SurfaceKHR create = (PFN_vkCreateWin32SurfaceKHR)gipa(inst, "vkCreateWin32SurfaceKHR");
+    if (!create) { platform_log("platform: vkCreateWin32SurfaceKHR not found\n"); return false; }
+
+    VkWin32SurfaceCreateInfoKHR ci{};
+    ci.sType     = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    ci.hinstance = window->hinst;
+    ci.hwnd      = window->hwnd;
+
+    VkSurfaceKHR surface = VK_NULL_HANDLE;
+    VkResult res = create(inst, &ci, nullptr, &surface);
+    if (res != VK_SUCCESS) { platform_log("platform: vkCreateWin32SurfaceKHR failed (%d)\n", (int)res); return false; }
+    *out_surface = (unsigned long long)(uintptr_t)surface;
+    return true;
+}
+#endif
 
 // ---- Diagnostics ------------------------------------------------------------
 void platform_log(const char* fmt, ...) {
