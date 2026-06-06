@@ -55,7 +55,8 @@ int main(int argc, char** argv) {
             std::printf("  reached %d frames -> quit\n", max_frames);
             break;
         }
-        platform_sleep_ms(6);        // crude pacing for M0.3 (no vsync until Vulkan)
+        if (rnd) renderer_draw(rnd, in.fb_width, in.fb_height, in.window_minimized);  // vsync paces us
+        else     platform_sleep_ms(6);   // no renderer: don't busy-spin
     }
 
     double elapsed = (double)(platform_time_ticks() - start) / (double)freq;

@@ -4,3 +4,6 @@
 // early stand-in for the M2.5 null backend.
 Renderer* renderer_create(PlatformWindow* window) { (void)window; return nullptr; }
 void      renderer_destroy(Renderer* r)           { (void)r; }
+void      renderer_draw(Renderer* r, int fb_width, int fb_height, bool minimized) {
+    (void)r; (void)fb_width; (void)fb_height; (void)minimized;
+}
