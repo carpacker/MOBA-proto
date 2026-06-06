@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "platform/platform.h"
+#include "platform/platform_vulkan.h"
 
 // ---- Internal window state (the opaque PlatformWindow) ----
 struct PlatformWindow {
@@ -306,6 +307,17 @@ void platform_arena_release(Arena* a) {
         VirtualFree(a->base, 0, MEM_RELEASE);
         a->base = nullptr; a->offset = 0; a->committed = 0; a->reserved = 0;
     }
+}
+
+// ---- Vulkan loader (ADR-0004): hand-load vulkan-1.dll, hand back vkGetInstanceProcAddr ----
+PlatformVkProc platform_vk_get_loader(void) {
+    static HMODULE vklib = nullptr;
+    if (!vklib) vklib = LoadLibraryW(L"vulkan-1.dll");
+    if (!vklib) {
+        platform_log("platform: LoadLibrary(vulkan-1.dll) failed (%lu)\n", (unsigned long)GetLastError());
+        return nullptr;
+    }
+    return (PlatformVkProc)GetProcAddress(vklib, "vkGetInstanceProcAddr");
 }
 
 // ---- Diagnostics ------------------------------------------------------------
