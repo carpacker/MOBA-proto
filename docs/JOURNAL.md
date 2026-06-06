@@ -6,6 +6,112 @@ is the narrative record.
 
 ---
 
+## Session 03 — 2026-06-06 — Test visualization + Phase 2 begun (M2.0: clear the screen)
+
+**Scope:** Add ways to *see* what the tests/engine do, then begin Phase 2 — raw Vulkan
+bring-up — all the way to a window that clears to an animated color.
+**Outcome:** **M2.0 functionally complete.** The engine talks to the GPU through a fully
+hand-loaded Vulkan stack and clears the swapchain every frame, **validation-clean**.
+Six PRs merged to `main` this session (`#2`–`#6`); this entry covers `#4`–`#6` (M1.4 +
+CI were Session 02). Working tree clean.
+
+### Timeline (this session)
+
+| PR | Squash | Summary |
+|---|---|---|
+| `#4` | `5eccf2a` | Test-visualization tooling: `tools/visualize` BMP dumps + CI test report |
+| `#5` | `4f0644a` | M2.0 rung 1: hand-loaded loader + instance + debug messenger + device select |
+| `#6` | `36b74f6` | M2.0 rung 2: surface + device + swapchain + per-frame sync → animated clear |
+
+(Plus a Node-free CI rework, PR `#3`/`8ae3977`, logged under Session 02.)
+
+### Visualizing the tests (PR #4)
+
+- **`tools/visualize`** — a headless exe that renders the fixed-point math the `det`
+  suite asserts numerically into 24-bit BMPs (Windows opens these natively): `fix_sin`/
+  `fix_cos`/`fix_sqrt` vs libm. The standout is `fix_trig_error.bmp`, which draws the
+  **±2e-3 band the `det` `CHECK_APPROX` asserts** in red so the LUT error is visibly
+  inside tolerance — the numeric test made tangible. Outputs are gitignored.
+- **CI test report** — `ctest --output-junit` + a native pwsh step renders a per-test
+  PASS/FAIL table into the GitHub run summary (no third-party action). Read attributes
+  via `GetAttribute` — on an `[xml]` element `$node.name` is the *tag* name, not the
+  attribute.
+- Fixed a **latent `.gitignore` bug**: it has no inline comments, so the trailing
+  `# …` made `*.spv`/`baked/`/`*.mba`/`*.pak` match nothing (would have bitten in
+  Phase 2/4). Comments moved to their own lines.
+
+### Phase 2 — Vulkan bring-up (PRs #5, #6)
+
+Installed the **LunarG Vulkan SDK** (`KhronosGroup.VulkanSDK` 1.4.350.0 via winget).
+
+- **Hand-loaded loader (ADR-0004):** `platform_vk_get_loader()` `LoadLibrary`s
+  `vulkan-1.dll` → `vkGetInstanceProcAddr`; the renderer routes **every** call through
+  its own dispatch table (`Vk`) in three tiers — global (`gipa(NULL,…)`), instance, and
+  **device** (re-resolved via `vkGetDeviceProcAddr` to skip the loader trampoline).
+  Links Vulkan **headers only, never `vulkan-1.lib`**.
+- **Instance** API 1.3 + `VK_LAYER_KHRONOS_validation` + a debug-utils messenger that
+  logs WARN/ERROR and never aborts the triggering call.
+- **Surface** in the platform (`platform_vk_create_surface` → `vkCreateWin32SurfaceKHR`,
+  HWND never crosses into render — ADR-0005); physical-device scoring (discrete >
+  integrated, must have graphics+present); logical device + `VK_KHR_swapchain`.
+- **Swapchain:** `B8G8R8A8_SRGB`/`SRGB_NONLINEAR` preferred, `MAILBOX`→`FIFO` fallback,
+  `minImageCount+1`, extent clamped to caps; brute-force `vkDeviceWaitIdle` recreation
+  on resize/`OUT_OF_DATE`/`SUBOPTIMAL`.
+- **Per-frame sync (the #1 risk):** frames-in-flight=2 (per-frame command buffer +
+  `image_available` semaphore + `in_flight` fence) + a **per-swapchain-image**
+  `render_finished` semaphore + the `images_in_flight[]` fence array. Clears with
+  `vkCmdClearColorImage` + classic `UNDEFINED→TRANSFER_DST→PRESENT_SRC` barriers (no
+  render pass / dynamic rendering needed *just* to clear).
+
+### Key decisions & gotchas
+
+- **Dual backend so CI stays green without an SDK.** `eng_render` compiles the real
+  Vulkan backend when `find_package(Vulkan)` finds headers, else a **null backend**
+  (`renderer_null.cpp`) so the `renderer.h` seam still links. The runner has no SDK, so
+  CI builds null; the Vulkan path is verified locally. Flipping `find_package` to
+  `REQUIRED` waits on installing the SDK in CI. (Early form of the M2.5 null backend.)
+- **The acquire semaphore-reuse hazard, handled:** `vkAcquireNextImageKHR` returning
+  `OUT_OF_DATE` does **not** signal the semaphore (no image), so we bail and recreate
+  safely; `SUBOPTIMAL` *does* acquire+signal, so we must proceed through submit/present
+  and recreate *after*. Conflating the two leaks a signaled semaphore → validation error.
+- **`VULKAN_SDK` and pre-existing shells:** a session started before the SDK install
+  doesn't see the env var; set `$env:VULKAN_SDK` for the build (a restart fixes it). The
+  pre-push gate / CI therefore build the null backend unless the var is present.
+- **Can't screenshot the live window from the agent:** the sandbox window is created in
+  an isolated window station, so `FindWindow` returns 0 and `PrintWindow` can't capture
+  it. Verification rests on the validation-clean multi-frame run; a real display (run
+  `sandbox.exe`) or an in-process readback is needed to *see* it.
+- `.bat` files must be ASCII (a stray em-dash broke `cmd`'s parser); use `git commit -F`
+  / `gh --body-file`, not PowerShell here-strings (they intermittently mangle).
+
+### Verification
+
+- **`renderer: Vulkan 1.3 up | validation=on | GPU: NVIDIA GeForce GTX 1070 (discrete)
+  | swapchain 1280x720 x3`** — 60 acquire→clear→present cycles, validation ON, **zero
+  validation messages**, clean teardown. Builds `/WX` (Vulkan + null backends).
+- CI green on every PR (Debug + Release matrix; null backend on the runner).
+
+### Deferred backlog (carried forward)
+
+- Install the Vulkan SDK in CI → flip `find_package(Vulkan)` to `REQUIRED`, drop the
+  null path (or keep it as the deliberate M2.5 null backend).
+- **Interactive M2.0 DoD:** verify zero validation errors across a real resize,
+  minimize/restore, and alt-tab (paths implemented; needs a display).
+- In-process **readback screenshot** (session-independent visual proof of the clear).
+- Adopt `synchronization2` + **dynamic rendering** at M2.1 (the triangle needs a real
+  color attachment, not `vkCmdClearColorImage`).
+- Optional OpenCppCoverage HTML; split `plat_mem_*` out of the Win32 window TU.
+
+### Where we are / next
+
+**Phase 2 is underway and M2.0 (clear the screen) is functionally done** — the renderer
+seam, hand-loaded loader, and a correct per-frame present loop are in place and proven
+validation-clean. **Next: M2.1 — the first triangle** (graphics pipeline + offline
+SPIR-V via `glslc`/`add_shader_library` per ADR-0008 + a pipeline cache), adopting
+sync2/dynamic-rendering there.
+
+---
+
 ## Session 02 — 2026-06-06 — M1.4: test harness + CTest + pre-push gate (Phase 1 done)
 
 **Scope:** Finish Phase 1 by replacing the precursor test helpers with a real,
