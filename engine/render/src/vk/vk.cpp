@@ -33,6 +33,8 @@ bool vk_load_instance(Vk* vk, VkInstance instance) {
     VK_INSTANCE(DestroyInstance,                         vkDestroyInstance);
     VK_INSTANCE(EnumeratePhysicalDevices,                vkEnumeratePhysicalDevices);
     VK_INSTANCE(GetPhysicalDeviceProperties,             vkGetPhysicalDeviceProperties);
+    VK_INSTANCE(GetPhysicalDeviceFeatures2,              vkGetPhysicalDeviceFeatures2);
+    VK_INSTANCE(GetPhysicalDeviceMemoryProperties,       vkGetPhysicalDeviceMemoryProperties);
     VK_INSTANCE(GetPhysicalDeviceQueueFamilyProperties,  vkGetPhysicalDeviceQueueFamilyProperties);
     VK_INSTANCE(EnumerateDeviceExtensionProperties,      vkEnumerateDeviceExtensionProperties);
     VK_INSTANCE(CreateDevice,                            vkCreateDevice);
@@ -71,5 +73,38 @@ bool vk_load_device(Vk* vk, VkDevice device) {
     VK_DEVICE(QueueSubmit,            vkQueueSubmit);
     VK_DEVICE(CmdPipelineBarrier,     vkCmdPipelineBarrier);
     VK_DEVICE(CmdClearColorImage,     vkCmdClearColorImage);
+
+    // M2.1: pipeline + dynamic rendering + synchronization2 (core 1.3, gated by
+    // ADR-0012 at device selection, so a missing proc here is a real loader bug).
+    VK_DEVICE(CreateShaderModule,      vkCreateShaderModule);
+    VK_DEVICE(DestroyShaderModule,     vkDestroyShaderModule);
+    VK_DEVICE(CreatePipelineLayout,    vkCreatePipelineLayout);
+    VK_DEVICE(DestroyPipelineLayout,   vkDestroyPipelineLayout);
+    VK_DEVICE(CreateGraphicsPipelines, vkCreateGraphicsPipelines);
+    VK_DEVICE(DestroyPipeline,         vkDestroyPipeline);
+    VK_DEVICE(CreatePipelineCache,     vkCreatePipelineCache);
+    VK_DEVICE(DestroyPipelineCache,    vkDestroyPipelineCache);
+    VK_DEVICE(GetPipelineCacheData,    vkGetPipelineCacheData);
+    VK_DEVICE(CreateImageView,         vkCreateImageView);
+    VK_DEVICE(DestroyImageView,        vkDestroyImageView);
+    VK_DEVICE(CmdBeginRendering,       vkCmdBeginRendering);
+    VK_DEVICE(CmdEndRendering,         vkCmdEndRendering);
+    VK_DEVICE(CmdBindPipeline,         vkCmdBindPipeline);
+    VK_DEVICE(CmdSetViewport,          vkCmdSetViewport);
+    VK_DEVICE(CmdSetScissor,           vkCmdSetScissor);
+    VK_DEVICE(CmdDraw,                 vkCmdDraw);
+    VK_DEVICE(QueueSubmit2,            vkQueueSubmit2);
+    VK_DEVICE(CmdPipelineBarrier2,     vkCmdPipelineBarrier2);
+
+    // M2.1: readback screenshot staging.
+    VK_DEVICE(CreateBuffer,                vkCreateBuffer);
+    VK_DEVICE(DestroyBuffer,               vkDestroyBuffer);
+    VK_DEVICE(GetBufferMemoryRequirements, vkGetBufferMemoryRequirements);
+    VK_DEVICE(AllocateMemory,              vkAllocateMemory);
+    VK_DEVICE(FreeMemory,                  vkFreeMemory);
+    VK_DEVICE(BindBufferMemory,            vkBindBufferMemory);
+    VK_DEVICE(MapMemory,                   vkMapMemory);
+    VK_DEVICE(UnmapMemory,                 vkUnmapMemory);
+    VK_DEVICE(CmdCopyImageToBuffer,        vkCmdCopyImageToBuffer);
     return true;
 }

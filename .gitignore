@@ -83,3 +83,4 @@ baked/
 *.pak
 *.bmp
 viz/
+vk_pipeline_cache.bin

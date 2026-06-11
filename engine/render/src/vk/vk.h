@@ -32,6 +32,8 @@ struct Vk {
     PFN_vkDestroyInstance                            DestroyInstance;
     PFN_vkEnumeratePhysicalDevices                   EnumeratePhysicalDevices;
     PFN_vkGetPhysicalDeviceProperties                GetPhysicalDeviceProperties;
+    PFN_vkGetPhysicalDeviceFeatures2                 GetPhysicalDeviceFeatures2;        // 1.3 feature gate (ADR-0012)
+    PFN_vkGetPhysicalDeviceMemoryProperties          GetPhysicalDeviceMemoryProperties; // readback staging
     PFN_vkGetPhysicalDeviceQueueFamilyProperties     GetPhysicalDeviceQueueFamilyProperties;
     PFN_vkEnumerateDeviceExtensionProperties         EnumerateDeviceExtensionProperties;
     PFN_vkCreateDevice                               CreateDevice;
@@ -68,6 +70,39 @@ struct Vk {
     PFN_vkQueueSubmit            QueueSubmit;
     PFN_vkCmdPipelineBarrier     CmdPipelineBarrier;
     PFN_vkCmdClearColorImage     CmdClearColorImage;
+
+    // M2.1: pipeline + dynamic rendering + synchronization2 (all core 1.3 — required
+    // by the ADR-0012 minimum spec, so resolved fatally like the rest of the tier).
+    PFN_vkCreateShaderModule        CreateShaderModule;
+    PFN_vkDestroyShaderModule       DestroyShaderModule;
+    PFN_vkCreatePipelineLayout      CreatePipelineLayout;
+    PFN_vkDestroyPipelineLayout     DestroyPipelineLayout;
+    PFN_vkCreateGraphicsPipelines   CreateGraphicsPipelines;
+    PFN_vkDestroyPipeline           DestroyPipeline;
+    PFN_vkCreatePipelineCache       CreatePipelineCache;
+    PFN_vkDestroyPipelineCache      DestroyPipelineCache;
+    PFN_vkGetPipelineCacheData      GetPipelineCacheData;
+    PFN_vkCreateImageView           CreateImageView;
+    PFN_vkDestroyImageView          DestroyImageView;
+    PFN_vkCmdBeginRendering         CmdBeginRendering;
+    PFN_vkCmdEndRendering           CmdEndRendering;
+    PFN_vkCmdBindPipeline           CmdBindPipeline;
+    PFN_vkCmdSetViewport            CmdSetViewport;
+    PFN_vkCmdSetScissor             CmdSetScissor;
+    PFN_vkCmdDraw                   CmdDraw;
+    PFN_vkQueueSubmit2              QueueSubmit2;
+    PFN_vkCmdPipelineBarrier2       CmdPipelineBarrier2;
+
+    // M2.1: readback screenshot (renderer_capture) — buffer + dedicated allocation.
+    PFN_vkCreateBuffer                CreateBuffer;
+    PFN_vkDestroyBuffer               DestroyBuffer;
+    PFN_vkGetBufferMemoryRequirements GetBufferMemoryRequirements;
+    PFN_vkAllocateMemory              AllocateMemory;
+    PFN_vkFreeMemory                  FreeMemory;
+    PFN_vkBindBufferMemory            BindBufferMemory;
+    PFN_vkMapMemory                   MapMemory;
+    PFN_vkUnmapMemory                 UnmapMemory;
+    PFN_vkCmdCopyImageToBuffer        CmdCopyImageToBuffer;
 };
 
 // Resolve the global tier from the platform loader. Fatal on a missing core proc.
