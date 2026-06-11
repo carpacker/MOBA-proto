@@ -8,30 +8,53 @@
 #include <cstdio>
 #include <cmath>
 
-// M2.1: first graphics pipeline. The frame is now rendered with DYNAMIC RENDERING +
-// SYNCHRONIZATION2 (both core 1.3, required by ADR-0012): barrier2 to
+// M2.2: first real GPU memory traffic on top of the M2.1 pipeline path. The frame is
+// rendered with DYNAMIC RENDERING + SYNCHRONIZATION2 (ADR-0012): barrier2 to
 // COLOR_ATTACHMENT_OPTIMAL -> vkCmdBeginRendering (loadOp=CLEAR carries the animated
-// color) -> draw the registry's pipelines -> barrier2 to PRESENT_SRC -> QueueSubmit2.
-// Frame pacing is unchanged from M2.0: frames-in-flight = 2, per-frame command buffer
-// + image_available semaphore + in_flight fence, per-SWAPCHAIN-IMAGE render_finished
-// semaphore + images_in_flight fence pointer.
+// color) -> triangle -> textured quad (VB/IB + set=1 sampler descriptor) -> barrier2
+// to PRESENT_SRC -> QueueSubmit2. Buffers/images are DEVICE_LOCAL, filled through
+// HOST_COHERENT staging + one-shot submits at startup. Frame pacing is unchanged from
+// M2.0: frames-in-flight = 2, per-frame command buffer + image_available semaphore +
+// in_flight fence, per-SWAPCHAIN-IMAGE render_finished semaphore + images_in_flight
+// fence pointer.
 #define FRAMES_IN_FLIGHT 2
 #define MAX_SC_IMAGES    8
 
 // ---- Static pipeline registry (roadmap M2.1) ----------------------------------
 // Pipelines the renderer owns, created at startup from offline-compiled SPIR-V
-// (ADR-0008: glslc -> ${build}/shaders, located via MOBA_SHADER_DIR). Grows with the
-// engine; M2.1 has exactly one entry. All entries share one (empty) pipeline layout
-// until descriptors arrive in M2.2.
+// (ADR-0008: glslc -> ${build}/shaders, located via MOBA_SHADER_DIR).
+enum PipelineVertexLayout {
+    VERTEX_LAYOUT_NONE,        // verts hardcoded in the shader (M2.1 triangle)
+    VERTEX_LAYOUT_POS2_UV2,    // QuadVertex: vec2 pos + vec2 uv from a vertex buffer
+};
+enum PipelineLayoutKind {
+    LAYOUT_EMPTY,              // no descriptors (triangle)
+    LAYOUT_MATERIAL,           // set=0 empty placeholder + set=1 texture+sampler
+};
 struct PipelineDesc {
     const char* name;
-    const char* vert_spv;    // file name inside MOBA_SHADER_DIR
+    const char* vert_spv;      // file name inside MOBA_SHADER_DIR
     const char* frag_spv;
+    PipelineVertexLayout vertex_layout;
+    PipelineLayoutKind   layout_kind;
 };
-enum { PIPELINE_TRIANGLE = 0, PIPELINE_COUNT = 1 };
+enum { PIPELINE_TRIANGLE = 0, PIPELINE_QUAD = 1, PIPELINE_COUNT = 2 };
 static const PipelineDesc k_pipeline_registry[PIPELINE_COUNT] = {
-    { "triangle", "triangle.vert.spv", "triangle.frag.spv" },
+    { "triangle", "triangle.vert.spv", "triangle.frag.spv", VERTEX_LAYOUT_NONE,     LAYOUT_EMPTY    },
+    { "quad",     "quad.vert.spv",     "quad.frag.spv",     VERTEX_LAYOUT_POS2_UV2, LAYOUT_MATERIAL },
 };
+
+// ---- Quad geometry (M2.2) ------------------------------------------------------
+// NDC is Y-down; uv (0,0) is the texture's top-left texel (rows uploaded top-down),
+// so the top-left vertex carries uv (0,0) and the image appears upright.
+struct QuadVertex { float x, y, u, v; };
+static const QuadVertex k_quad_verts[4] = {
+    { -0.4f, -0.4f, 0.0f, 0.0f },   // top-left
+    {  0.4f, -0.4f, 1.0f, 0.0f },   // top-right
+    {  0.4f,  0.4f, 1.0f, 1.0f },   // bottom-right
+    { -0.4f,  0.4f, 0.0f, 1.0f },   // bottom-left
+};
+static const uint16_t k_quad_indices[6] = { 0, 1, 2, 0, 2, 3 };
 
 // On-disk pipeline cache (DoD: appears after first run, primes the second). Lives in
 // the working directory until the asset/user-dir story lands (Phase 4).
@@ -66,9 +89,26 @@ struct Renderer {
 
     // pipelines (M2.1)
     VkPipelineCache  pipeline_cache;
-    VkPipelineLayout pipeline_layout;                // shared, empty until M2.2
+    VkPipelineLayout pipeline_layout;                // empty (triangle)
     VkPipeline       pipelines[PIPELINE_COUNT];
     VkFormat         pipelines_format;               // sc format they were built for
+
+    // vk_alloc Phase 1 (M2.2): dedicated allocations, counted against the cap.
+    uint32_t         alloc_count;
+
+    // textured quad (M2.2)
+    VkBuffer              quad_vb,  quad_ib;
+    VkDeviceMemory        quad_vb_mem, quad_ib_mem;
+    VkImage               texture;
+    VkDeviceMemory        texture_mem;
+    VkImageView           texture_view;
+    VkSampler             sampler;
+    VkDescriptorSetLayout set0_layout;               // empty placeholder (per-frame UBO lands here in M2.3)
+    VkDescriptorSetLayout material_layout;           // set=1: combined image sampler
+    VkDescriptorPool      desc_pool;
+    VkDescriptorSet       material_set;
+    VkPipelineLayout      material_pipeline_layout;  // [set0_layout, material_layout]
+    bool                  texture_ready;             // quad draws only once this is set
 
     // per-frame
     VkCommandPool   cmd_pool;
@@ -149,6 +189,166 @@ static bool pick_families(Vk* vk, VkPhysicalDevice pd, VkSurfaceKHR surface, uin
     return true;
 }
 
+// ---- vk_alloc Phase 1 (roadmap M2.0/M2.2): one VkDeviceMemory per resource --------
+// The naive allocator: every buffer/image gets a dedicated allocation. Because buffers
+// and images never share a VkDeviceMemory, bufferImageGranularity can't bite; because
+// staging memory is HOST_COHERENT, no flush/nonCoherentAtomSize math exists anywhere.
+// The live count stays conservatively under the 4096 maxMemoryAllocationCount floor —
+// headroom for swapchain/driver internals — and is a hard ENSURE: blowing it means the
+// naive scheme's time is up (the block allocator is a later, deliberate phase).
+#define VK_ALLOC_MAX 3500u
+
+static uint32_t find_memory_type(Renderer* r, uint32_t type_bits, VkMemoryPropertyFlags want) {
+    VkPhysicalDeviceMemoryProperties mp{};
+    r->vk.GetPhysicalDeviceMemoryProperties(r->phys, &mp);
+    for (uint32_t i = 0; i < mp.memoryTypeCount; ++i)
+        if ((type_bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & want) == want) return i;
+    return UINT32_MAX;
+}
+
+static bool alloc_buffer(Renderer* r, VkDeviceSize size, VkBufferUsageFlags usage,
+                         VkMemoryPropertyFlags mem_props, VkBuffer* out_buf, VkDeviceMemory* out_mem) {
+    *out_buf = VK_NULL_HANDLE; *out_mem = VK_NULL_HANDLE;
+    VkBufferCreateInfo ci{};
+    ci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    ci.size        = size;
+    ci.usage       = usage;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (r->vk.CreateBuffer(r->device, &ci, nullptr, out_buf) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements req{};
+    r->vk.GetBufferMemoryRequirements(r->device, *out_buf, &req);
+    uint32_t type = find_memory_type(r, req.memoryTypeBits, mem_props);
+    VkMemoryAllocateInfo mai{};
+    mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize  = req.size;
+    mai.memoryTypeIndex = type;
+    ENSURE_MSG(r->alloc_count < VK_ALLOC_MAX, "vk_alloc: dedicated-allocation cap hit — time for the block allocator");
+    if (type == UINT32_MAX ||
+        r->vk.AllocateMemory(r->device, &mai, nullptr, out_mem) != VK_SUCCESS ||
+        r->vk.BindBufferMemory(r->device, *out_buf, *out_mem, 0) != VK_SUCCESS) {
+        if (*out_mem) r->vk.FreeMemory(r->device, *out_mem, nullptr);
+        r->vk.DestroyBuffer(r->device, *out_buf, nullptr);
+        *out_buf = VK_NULL_HANDLE; *out_mem = VK_NULL_HANDLE;
+        return false;
+    }
+    ++r->alloc_count;
+    return true;
+}
+
+static void free_buffer(Renderer* r, VkBuffer* buf, VkDeviceMemory* mem) {
+    if (*buf) { r->vk.DestroyBuffer(r->device, *buf, nullptr); *buf = VK_NULL_HANDLE; }
+    if (*mem) { r->vk.FreeMemory(r->device, *mem, nullptr); *mem = VK_NULL_HANDLE; --r->alloc_count; }
+}
+
+static bool alloc_image_2d(Renderer* r, uint32_t w, uint32_t h, VkFormat format,
+                           VkImageUsageFlags usage, VkImage* out_img, VkDeviceMemory* out_mem) {
+    *out_img = VK_NULL_HANDLE; *out_mem = VK_NULL_HANDLE;
+    VkImageCreateInfo ci{};
+    ci.sType         = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType     = VK_IMAGE_TYPE_2D;
+    ci.format        = format;
+    ci.extent        = { w, h, 1 };
+    ci.mipLevels     = 1;                       // mip generation is the cooker's job (M4.2)
+    ci.arrayLayers   = 1;
+    ci.samples       = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling        = VK_IMAGE_TILING_OPTIMAL;
+    ci.usage         = usage;
+    ci.sharingMode   = VK_SHARING_MODE_EXCLUSIVE;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (r->vk.CreateImage(r->device, &ci, nullptr, out_img) != VK_SUCCESS) return false;
+
+    VkMemoryRequirements req{};
+    r->vk.GetImageMemoryRequirements(r->device, *out_img, &req);
+    uint32_t type = find_memory_type(r, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkMemoryAllocateInfo mai{};
+    mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    mai.allocationSize  = req.size;
+    mai.memoryTypeIndex = type;
+    ENSURE_MSG(r->alloc_count < VK_ALLOC_MAX, "vk_alloc: dedicated-allocation cap hit — time for the block allocator");
+    if (type == UINT32_MAX ||
+        r->vk.AllocateMemory(r->device, &mai, nullptr, out_mem) != VK_SUCCESS ||
+        r->vk.BindImageMemory(r->device, *out_img, *out_mem, 0) != VK_SUCCESS) {
+        if (*out_mem) r->vk.FreeMemory(r->device, *out_mem, nullptr);
+        r->vk.DestroyImage(r->device, *out_img, nullptr);
+        *out_img = VK_NULL_HANDLE; *out_mem = VK_NULL_HANDLE;
+        return false;
+    }
+    ++r->alloc_count;
+    return true;
+}
+
+static void free_image(Renderer* r, VkImage* img, VkDeviceMemory* mem) {
+    if (*img) { r->vk.DestroyImage(r->device, *img, nullptr); *img = VK_NULL_HANDLE; }
+    if (*mem) { r->vk.FreeMemory(r->device, *mem, nullptr); *mem = VK_NULL_HANDLE; --r->alloc_count; }
+}
+
+// sync2 image barrier helper: one full-subresource color transition.
+static void image_barrier2(Renderer* r, VkCommandBuffer cb, VkImage image,
+                           VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
+                           VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access,
+                           VkImageLayout old_layout, VkImageLayout new_layout) {
+    VkImageMemoryBarrier2 b{};
+    b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+    b.srcStageMask        = src_stage;
+    b.srcAccessMask       = src_access;
+    b.dstStageMask        = dst_stage;
+    b.dstAccessMask       = dst_access;
+    b.oldLayout           = old_layout;
+    b.newLayout           = new_layout;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image               = image;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    b.subresourceRange.levelCount = 1;
+    b.subresourceRange.layerCount = 1;
+    VkDependencyInfo dep{};
+    dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+    dep.imageMemoryBarrierCount = 1;
+    dep.pImageMemoryBarriers    = &b;
+    r->vk.CmdPipelineBarrier2(cb, &dep);
+}
+
+// ---- One-shot submits (startup uploads; never per-frame) -------------------------
+// Record into a transient command buffer, submit on the gfx queue, fence-wait to
+// completion, free. Device-side visibility for later frame submissions comes from the
+// barriers recorded INSIDE the one-shot (the fence only synchronizes the host).
+static VkCommandBuffer begin_one_shot(Renderer* r) {
+    VkCommandBufferAllocateInfo ai{};
+    ai.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    ai.commandPool        = r->cmd_pool;
+    ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    ai.commandBufferCount = 1;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    if (r->vk.AllocateCommandBuffers(r->device, &ai, &cb) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkCommandBufferBeginInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    r->vk.BeginCommandBuffer(cb, &bi);
+    return cb;
+}
+
+static bool end_one_shot(Renderer* r, VkCommandBuffer cb) {
+    r->vk.EndCommandBuffer(cb);
+    VkFenceCreateInfo fci{}; fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    VkFence fence = VK_NULL_HANDLE;
+    bool ok = r->vk.CreateFence(r->device, &fci, nullptr, &fence) == VK_SUCCESS;
+    if (ok) {
+        VkCommandBufferSubmitInfo cbi{};
+        cbi.sType         = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+        cbi.commandBuffer = cb;
+        VkSubmitInfo2 si{};
+        si.sType                  = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+        si.commandBufferInfoCount = 1;
+        si.pCommandBufferInfos    = &cbi;
+        ok = r->vk.QueueSubmit2(r->gfx_queue, 1, &si, fence) == VK_SUCCESS &&
+             r->vk.WaitForFences(r->device, 1, &fence, VK_TRUE, UINT64_MAX) == VK_SUCCESS;
+        r->vk.DestroyFence(r->device, fence, nullptr);
+    }
+    r->vk.FreeCommandBuffers(r->device, r->cmd_pool, 1, &cb);
+    return ok;
+}
+
 // ---- Pipelines (M2.1) ----------------------------------------------------------
 
 // Load one offline-compiled .spv from MOBA_SHADER_DIR into a shader module. The blob
@@ -209,10 +409,23 @@ static bool build_pipelines(Renderer* r) {
         stages[1].module = frag;
         stages[1].pName  = "main";
 
-        // M2.1: vertices are hardcoded in the shader — empty vertex input on purpose
-        // (roadmap: "keep it hardcoded here"; real buffers arrive in M2.2).
+        // Vertex input per registry entry: the triangle keeps its empty input (verts
+        // hardcoded in the shader, M2.1); the quad streams QuadVertex (M2.2).
+        VkVertexInputBindingDescription bind{};
+        bind.binding   = 0;
+        bind.stride    = sizeof(QuadVertex);
+        bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        VkVertexInputAttributeDescription attrs[2]{};
+        attrs[0].location = 0; attrs[0].binding = 0; attrs[0].format = VK_FORMAT_R32G32_SFLOAT; attrs[0].offset = 0;                       // pos
+        attrs[1].location = 1; attrs[1].binding = 0; attrs[1].format = VK_FORMAT_R32G32_SFLOAT; attrs[1].offset = sizeof(float) * 2;       // uv
         VkPipelineVertexInputStateCreateInfo vin{};
         vin.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        if (d->vertex_layout == VERTEX_LAYOUT_POS2_UV2) {
+            vin.vertexBindingDescriptionCount   = 1;
+            vin.pVertexBindingDescriptions      = &bind;
+            vin.vertexAttributeDescriptionCount = 2;
+            vin.pVertexAttributeDescriptions    = attrs;
+        }
 
         VkPipelineInputAssemblyStateCreateInfo ia{};
         ia.sType    = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -267,7 +480,7 @@ static bool build_pipelines(Renderer* r) {
         ci.pMultisampleState   = &ms;
         ci.pColorBlendState    = &blend;
         ci.pDynamicState       = &dyn;
-        ci.layout              = r->pipeline_layout;
+        ci.layout              = d->layout_kind == LAYOUT_MATERIAL ? r->material_pipeline_layout : r->pipeline_layout;
         ci.renderPass          = VK_NULL_HANDLE;
 
         VkResult res = r->vk.CreateGraphicsPipelines(r->device, r->pipeline_cache, 1, &ci, nullptr, &r->pipelines[i]);
@@ -586,12 +799,134 @@ Renderer* renderer_create(PlatformWindow* window) {
         r->vk.CreateFence(r->device, &fci, nullptr, &r->in_flight[i]);
     }
 
-    // Pipeline layout (empty until descriptors, M2.2) + cache + first swapchain.
+    // Pipeline layouts. The triangle's stays empty; the quad's is [set=0 empty
+    // placeholder, set=1 material] so M2.3's per-frame UBO can claim set=0 without
+    // renumbering anything (roadmap: material lives at set=1).
     VkPipelineLayoutCreateInfo plci{};
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     if (r->vk.CreatePipelineLayout(r->device, &plci, nullptr, &r->pipeline_layout) != VK_SUCCESS) {
         platform_log("renderer: vkCreatePipelineLayout failed\n"); renderer_destroy(r); return nullptr;
     }
+    {
+        VkDescriptorSetLayoutCreateInfo empty_ci{};
+        empty_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        VkDescriptorSetLayoutBinding tex_bind{};
+        tex_bind.binding         = 0;
+        tex_bind.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        tex_bind.descriptorCount = 1;
+        tex_bind.stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo mat_ci{};
+        mat_ci.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        mat_ci.bindingCount = 1;
+        mat_ci.pBindings    = &tex_bind;
+        if (r->vk.CreateDescriptorSetLayout(r->device, &empty_ci, nullptr, &r->set0_layout) != VK_SUCCESS ||
+            r->vk.CreateDescriptorSetLayout(r->device, &mat_ci, nullptr, &r->material_layout) != VK_SUCCESS) {
+            platform_log("renderer: vkCreateDescriptorSetLayout failed\n"); renderer_destroy(r); return nullptr;
+        }
+        VkDescriptorSetLayout sets[2] = { r->set0_layout, r->material_layout };
+        VkPipelineLayoutCreateInfo mat_plci{};
+        mat_plci.sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        mat_plci.setLayoutCount = 2;
+        mat_plci.pSetLayouts    = sets;
+        if (r->vk.CreatePipelineLayout(r->device, &mat_plci, nullptr, &r->material_pipeline_layout) != VK_SUCCESS) {
+            platform_log("renderer: material pipeline layout failed\n"); renderer_destroy(r); return nullptr;
+        }
+
+        VkDescriptorPoolSize pool_size{};
+        pool_size.type            = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        pool_size.descriptorCount = 1;
+        VkDescriptorPoolCreateInfo pool_ci{};
+        pool_ci.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pool_ci.maxSets       = 1;
+        pool_ci.poolSizeCount = 1;
+        pool_ci.pPoolSizes    = &pool_size;
+        VkDescriptorSetAllocateInfo set_ai{};
+        if (r->vk.CreateDescriptorPool(r->device, &pool_ci, nullptr, &r->desc_pool) != VK_SUCCESS) {
+            platform_log("renderer: vkCreateDescriptorPool failed\n"); renderer_destroy(r); return nullptr;
+        }
+        set_ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        set_ai.descriptorPool     = r->desc_pool;
+        set_ai.descriptorSetCount = 1;
+        set_ai.pSetLayouts        = &r->material_layout;
+        if (r->vk.AllocateDescriptorSets(r->device, &set_ai, &r->material_set) != VK_SUCCESS) {
+            platform_log("renderer: vkAllocateDescriptorSets failed\n"); renderer_destroy(r); return nullptr;
+        }
+
+        // One fixed linear-repeat sampler — the "tiny fixed sampler set", population 1.
+        VkSamplerCreateInfo samp_ci{};
+        samp_ci.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        samp_ci.magFilter    = VK_FILTER_LINEAR;
+        samp_ci.minFilter    = VK_FILTER_LINEAR;
+        samp_ci.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;   // single mip until M4.2
+        samp_ci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samp_ci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samp_ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        samp_ci.maxLod       = VK_LOD_CLAMP_NONE;
+        if (r->vk.CreateSampler(r->device, &samp_ci, nullptr, &r->sampler) != VK_SUCCESS) {
+            platform_log("renderer: vkCreateSampler failed\n"); renderer_destroy(r); return nullptr;
+        }
+    }
+
+    // Quad VB/IB: DEVICE_LOCAL, filled through ONE staging buffer (verts then indices)
+    // and a one-shot copy. The one-shot ends with buffer barriers2 into
+    // VERTEX_ATTRIBUTE_INPUT/INDEX_INPUT so every later frame submission sees the data
+    // (the fence only tells the HOST it finished).
+    {
+        const VkDeviceSize vb_bytes = sizeof(k_quad_verts);
+        const VkDeviceSize ib_bytes = sizeof(k_quad_indices);
+        VkBuffer staging = VK_NULL_HANDLE; VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+        bool ok = alloc_buffer(r, vb_bytes + ib_bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               &staging, &staging_mem) &&
+                  alloc_buffer(r, vb_bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &r->quad_vb, &r->quad_vb_mem) &&
+                  alloc_buffer(r, ib_bytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &r->quad_ib, &r->quad_ib_mem);
+        void* mapped = nullptr;
+        if (ok) ok = r->vk.MapMemory(r->device, staging_mem, 0, VK_WHOLE_SIZE, 0, &mapped) == VK_SUCCESS;
+        if (ok) {
+            memcpy(mapped, k_quad_verts, (size_t)vb_bytes);
+            memcpy((uint8_t*)mapped + vb_bytes, k_quad_indices, (size_t)ib_bytes);
+            r->vk.UnmapMemory(r->device, staging_mem);   // HOST_COHERENT: no flush needed
+
+            VkCommandBuffer cb = begin_one_shot(r);
+            ok = cb != VK_NULL_HANDLE;
+            if (ok) {
+                VkBufferCopy vb_copy{}; vb_copy.srcOffset = 0;        vb_copy.size = vb_bytes;
+                VkBufferCopy ib_copy{}; ib_copy.srcOffset = vb_bytes; ib_copy.size = ib_bytes;
+                r->vk.CmdCopyBuffer(cb, staging, r->quad_vb, 1, &vb_copy);
+                r->vk.CmdCopyBuffer(cb, staging, r->quad_ib, 1, &ib_copy);
+
+                VkBufferMemoryBarrier2 bb[2]{};
+                bb[0].sType         = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
+                bb[0].srcStageMask  = VK_PIPELINE_STAGE_2_COPY_BIT;
+                bb[0].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                bb[0].dstStageMask  = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT;
+                bb[0].dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
+                bb[0].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bb[0].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                bb[0].buffer        = r->quad_vb;
+                bb[0].size          = VK_WHOLE_SIZE;
+                bb[1] = bb[0];
+                bb[1].dstStageMask  = VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT;
+                bb[1].dstAccessMask = VK_ACCESS_2_INDEX_READ_BIT;
+                bb[1].buffer        = r->quad_ib;
+                VkDependencyInfo dep{};
+                dep.sType                    = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+                dep.bufferMemoryBarrierCount = 2;
+                dep.pBufferMemoryBarriers    = bb;
+                r->vk.CmdPipelineBarrier2(cb, &dep);
+                ok = end_one_shot(r, cb);
+            }
+        }
+        free_buffer(r, &staging, &staging_mem);
+        if (!ok) {
+            platform_log("renderer: quad vertex/index upload failed\n");
+            renderer_destroy(r);
+            return nullptr;
+        }
+    }
+
     create_pipeline_cache(r);
 
     int32_t w = 0, h = 0; platform_window_size(window, &w, &h);
@@ -613,6 +948,101 @@ Renderer* renderer_create(PlatformWindow* window) {
     return r;
 }
 
+// M2.2 (provisional seam — unified into typed handles at M2.5): staging upload of the
+// quad's texture. Blocking by design; this is a startup path.
+bool renderer_upload_texture(Renderer* r, int width, int height, const void* rgba8) {
+    if (!r || !rgba8 || width <= 0 || height <= 0) return false;
+    // vkCreateImage with extent > maxImageDimension2D is invalid usage (UB), not a
+    // graceful error — the app layer can't query the limit through the seam, so the
+    // guarantee that bad input yields false-(logged) has to live here.
+    const uint32_t max_dim = r->props.limits.maxImageDimension2D;
+    if ((uint32_t)width > max_dim || (uint32_t)height > max_dim) {
+        platform_log("renderer: texture %dx%d exceeds maxImageDimension2D (%u)\n", width, height, max_dim);
+        return false;
+    }
+
+    // Replacing an existing texture: nothing in flight may still sample it.
+    if (r->texture) {
+        r->vk.DeviceWaitIdle(r->device);
+        r->texture_ready = false;
+        if (r->texture_view) { r->vk.DestroyImageView(r->device, r->texture_view, nullptr); r->texture_view = VK_NULL_HANDLE; }
+        free_image(r, &r->texture, &r->texture_mem);
+    }
+
+    const uint32_t w = (uint32_t)width, h = (uint32_t)height;
+    const VkDeviceSize bytes = (VkDeviceSize)w * h * 4;
+
+    VkBuffer staging = VK_NULL_HANDLE; VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+    bool ok = alloc_image_2d(r, w, h, VK_FORMAT_R8G8B8A8_SRGB,
+                             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                             &r->texture, &r->texture_mem) &&
+              alloc_buffer(r, bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                           VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                           &staging, &staging_mem);
+    void* mapped = nullptr;
+    if (ok) ok = r->vk.MapMemory(r->device, staging_mem, 0, VK_WHOLE_SIZE, 0, &mapped) == VK_SUCCESS;
+    if (ok) {
+        memcpy(mapped, rgba8, (size_t)bytes);
+        r->vk.UnmapMemory(r->device, staging_mem);   // HOST_COHERENT: no flush needed
+
+        VkCommandBuffer cb = begin_one_shot(r);
+        ok = cb != VK_NULL_HANDLE;
+        if (ok) {
+            // UNDEFINED -> TRANSFER_DST -> copy -> SHADER_READ_ONLY (fragment sampling).
+            image_barrier2(r, cb, r->texture,
+                           VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
+                           VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            VkBufferImageCopy region{};
+            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.layerCount = 1;
+            region.imageExtent = { w, h, 1 };
+            r->vk.CmdCopyBufferToImage(cb, staging, r->texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            image_barrier2(r, cb, r->texture,
+                           VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            ok = end_one_shot(r, cb);
+        }
+    }
+    free_buffer(r, &staging, &staging_mem);
+
+    if (ok) {
+        VkImageViewCreateInfo vci{};
+        vci.sType                       = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image                       = r->texture;
+        vci.viewType                    = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format                      = VK_FORMAT_R8G8B8A8_SRGB;
+        vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vci.subresourceRange.levelCount = 1;
+        vci.subresourceRange.layerCount = 1;
+        ok = r->vk.CreateImageView(r->device, &vci, nullptr, &r->texture_view) == VK_SUCCESS;
+    }
+    if (ok) {
+        VkDescriptorImageInfo img_info{};
+        img_info.sampler     = r->sampler;
+        img_info.imageView   = r->texture_view;
+        img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet write{};
+        write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet          = r->material_set;
+        write.dstBinding      = 0;
+        write.descriptorCount = 1;
+        write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo      = &img_info;
+        r->vk.UpdateDescriptorSets(r->device, 1, &write, 0, nullptr);
+        r->texture_ready = true;
+        platform_log("renderer: texture uploaded (%dx%d, sRGB) | %u dedicated allocation(s) live\n",
+                     width, height, r->alloc_count);
+        return true;
+    }
+
+    platform_log("renderer: texture upload failed (%dx%d)\n", width, height);
+    if (r->texture_view) { r->vk.DestroyImageView(r->device, r->texture_view, nullptr); r->texture_view = VK_NULL_HANDLE; }
+    free_image(r, &r->texture, &r->texture_mem);
+    return false;
+}
+
 void renderer_destroy(Renderer* r) {
     if (!r) return;
     if (r->device) r->vk.DeviceWaitIdle(r->device);
@@ -620,6 +1050,18 @@ void renderer_destroy(Renderer* r) {
     destroy_pipelines(r);
     if (r->pipeline_layout) r->vk.DestroyPipelineLayout(r->device, r->pipeline_layout, nullptr);
     if (r->pipeline_cache)  r->vk.DestroyPipelineCache(r->device, r->pipeline_cache, nullptr);
+
+    // M2.2 quad resources.
+    if (r->texture_view)             r->vk.DestroyImageView(r->device, r->texture_view, nullptr);
+    free_image(r, &r->texture, &r->texture_mem);
+    free_buffer(r, &r->quad_vb, &r->quad_vb_mem);
+    free_buffer(r, &r->quad_ib, &r->quad_ib_mem);
+    if (r->sampler)                  r->vk.DestroySampler(r->device, r->sampler, nullptr);
+    if (r->desc_pool)                r->vk.DestroyDescriptorPool(r->device, r->desc_pool, nullptr);   // frees material_set
+    if (r->set0_layout)              r->vk.DestroyDescriptorSetLayout(r->device, r->set0_layout, nullptr);
+    if (r->material_layout)          r->vk.DestroyDescriptorSetLayout(r->device, r->material_layout, nullptr);
+    if (r->material_pipeline_layout) r->vk.DestroyPipelineLayout(r->device, r->material_pipeline_layout, nullptr);
+
     destroy_swapchain(r);
     for (uint32_t i = 0; i < FRAMES_IN_FLIGHT; ++i) {
         if (r->image_available[i]) r->vk.DestroySemaphore(r->device, r->image_available[i], nullptr);
@@ -635,32 +1077,6 @@ void renderer_destroy(Renderer* r) {
 }
 
 // ---- Frame -------------------------------------------------------------------------
-
-// sync2 image barrier helper: one full-subresource color transition.
-static void image_barrier2(Renderer* r, VkCommandBuffer cb, VkImage image,
-                           VkPipelineStageFlags2 src_stage, VkAccessFlags2 src_access,
-                           VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access,
-                           VkImageLayout old_layout, VkImageLayout new_layout) {
-    VkImageMemoryBarrier2 b{};
-    b.sType               = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-    b.srcStageMask        = src_stage;
-    b.srcAccessMask       = src_access;
-    b.dstStageMask        = dst_stage;
-    b.dstAccessMask       = dst_access;
-    b.oldLayout           = old_layout;
-    b.newLayout           = new_layout;
-    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image               = image;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.levelCount = 1;
-    b.subresourceRange.layerCount = 1;
-    VkDependencyInfo dep{};
-    dep.sType                   = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-    dep.imageMemoryBarrierCount = 1;
-    dep.pImageMemoryBarriers    = &b;
-    r->vk.CmdPipelineBarrier2(cb, &dep);
-}
 
 // Pending readback for the frame being recorded (renderer_capture's slow path).
 struct CaptureState {
@@ -705,36 +1121,14 @@ static bool draw_frame(Renderer* r, int fb_width, int fb_height, bool minimized,
     bool capture = false;
     if (cap && r->sc_can_transfer_src) {
         VkDeviceSize bytes = (VkDeviceSize)r->sc_extent.width * r->sc_extent.height * 4;
-        VkBufferCreateInfo bci{};
-        bci.sType       = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bci.size        = bytes;
-        bci.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-        bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        if (r->vk.CreateBuffer(r->device, &bci, nullptr, &cap->buffer) == VK_SUCCESS) {
-            VkMemoryRequirements req{};
-            r->vk.GetBufferMemoryRequirements(r->device, cap->buffer, &req);
-            VkPhysicalDeviceMemoryProperties mp{};
-            r->vk.GetPhysicalDeviceMemoryProperties(r->phys, &mp);
-            const VkMemoryPropertyFlags want_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-            uint32_t type = UINT32_MAX;
-            for (uint32_t i = 0; i < mp.memoryTypeCount; ++i)
-                if ((req.memoryTypeBits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & want_flags) == want_flags) { type = i; break; }
-            VkMemoryAllocateInfo mai{};
-            mai.sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            mai.allocationSize  = req.size;
-            mai.memoryTypeIndex = type;
-            if (type != UINT32_MAX &&
-                r->vk.AllocateMemory(r->device, &mai, nullptr, &cap->memory) == VK_SUCCESS &&
-                r->vk.BindBufferMemory(r->device, cap->buffer, cap->memory, 0) == VK_SUCCESS) {
-                cap->width  = r->sc_extent.width;
-                cap->height = r->sc_extent.height;
-                capture = true;
-            }
-        }
-        if (!capture) {   // fall back to a plain frame; caller sees waited_frame == -1
+        capture = alloc_buffer(r, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                               VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                               &cap->buffer, &cap->memory);
+        if (capture) {
+            cap->width  = r->sc_extent.width;
+            cap->height = r->sc_extent.height;
+        } else {   // fall back to a plain frame; caller sees waited_frame == -1
             platform_log("renderer: capture buffer setup failed — drawing without readback\n");
-            if (cap->memory) { r->vk.FreeMemory(r->device, cap->memory, nullptr); cap->memory = VK_NULL_HANDLE; }
-            if (cap->buffer) { r->vk.DestroyBuffer(r->device, cap->buffer, nullptr); cap->buffer = VK_NULL_HANDLE; }
         }
     }
 
@@ -785,6 +1179,17 @@ static bool draw_frame(Renderer* r, int fb_width, int fb_height, bool minimized,
 
     r->vk.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r->pipelines[PIPELINE_TRIANGLE]);
     r->vk.CmdDraw(cb, 3, 1, 0, 0);   // 3 verts hardcoded in triangle.vert
+
+    if (r->texture_ready) {          // M2.2: the textured quad, painted over the triangle
+        VkDeviceSize vb_offset = 0;
+        r->vk.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r->pipelines[PIPELINE_QUAD]);
+        r->vk.CmdBindVertexBuffers(cb, 0, 1, &r->quad_vb, &vb_offset);
+        r->vk.CmdBindIndexBuffer(cb, r->quad_ib, 0, VK_INDEX_TYPE_UINT16);
+        // set=0 is an empty placeholder the shaders never touch — only set=1 binds.
+        r->vk.CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, r->material_pipeline_layout,
+                                    1, 1, &r->material_set, 0, nullptr);
+        r->vk.CmdDrawIndexed(cb, 6, 1, 0, 0, 0);
+    }
 
     r->vk.CmdEndRendering(cb);
 
@@ -877,8 +1282,7 @@ bool renderer_capture(Renderer* r, int fb_width, int fb_height, bool minimized,
     CaptureState cap;
     bool drew = draw_frame(r, fb_width, fb_height, minimized, &cap);
     if (!drew || cap.waited_frame < 0) {
-        if (cap.memory) r->vk.FreeMemory(r->device, cap.memory, nullptr);
-        if (cap.buffer) r->vk.DestroyBuffer(r->device, cap.buffer, nullptr);
+        free_buffer(r, &cap.buffer, &cap.memory);
         return false;   // transient (minimized/OUT_OF_DATE) — caller may retry
     }
 
@@ -909,7 +1313,6 @@ bool renderer_capture(Renderer* r, int fb_width, int fb_height, bool minimized,
         }
         r->vk.UnmapMemory(r->device, cap.memory);
     }
-    r->vk.FreeMemory(r->device, cap.memory, nullptr);
-    r->vk.DestroyBuffer(r->device, cap.buffer, nullptr);
+    free_buffer(r, &cap.buffer, &cap.memory);
     return ok;
 }

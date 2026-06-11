@@ -26,7 +26,9 @@ if(TARGET Vulkan::Headers)
     # shaders; the renderer locates them via MOBA_SHADER_DIR at runtime.
     add_shader_library(shaders SOURCES
         engine/render/shaders/triangle.vert
-        engine/render/shaders/triangle.frag)
+        engine/render/shaders/triangle.frag
+        engine/render/shaders/quad.vert
+        engine/render/shaders/quad.frag)
     add_dependencies(eng_render shaders)
     # $<CONFIG> matches add_shader_library's per-config output dir, so a Debug binary
     # always loads -g shaders and a Release binary -O ones (never last-built-wins).

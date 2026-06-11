@@ -16,11 +16,19 @@ typedef struct Renderer Renderer;
 Renderer* renderer_create(PlatformWindow* window);
 void      renderer_destroy(Renderer* r);
 
-// Render one frame: clear to an animated color, draw the registered pipelines (M2.1:
-// the triangle), present. Pass the current framebuffer size + minimized flag from the
-// platform pump; swapchain recreation on resize is handled inside. No-op for the null
-// backend or while minimized.
+// Render one frame: clear to an animated color, draw the registered pipelines (the
+// M2.1 triangle, plus the M2.2 textured quad once a texture is uploaded), present.
+// Pass the current framebuffer size + minimized flag from the platform pump; swapchain
+// recreation on resize is handled inside. No-op for the null backend or while minimized.
 void renderer_draw(Renderer* r, int fb_width, int fb_height, bool minimized);
+
+// M2.2 (PROVISIONAL until the M2.5 upload-API unification into typed handles): upload
+// the quad's texture. `rgba8` is w*h*4, rows top-down, interpreted as sRGB. Copies
+// through a staging buffer into a DEVICE_LOCAL image and blocks until the upload
+// completes (startup-path; not for per-frame use). Replaces any previous texture
+// (device-idles first). The quad draws only after a successful upload. False (logged)
+// on the null backend or any failure.
+bool renderer_upload_texture(Renderer* r, int width, int height, const void* rgba8);
 
 // Render one frame AND read its pixels back (slow path — screenshots/visual tests).
 // On success fills `out` with a w*h*4 RGBA8 image (rows top-down) allocated from

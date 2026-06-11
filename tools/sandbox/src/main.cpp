@@ -4,8 +4,11 @@
 //   sandbox --frames N            auto-quits after N frames (smoke test)
 //   sandbox --screenshot out.bmp  captures the LAST frame to a 24-bit BMP (M2.1
 //                                 readback — session-independent visual proof)
+// M2.2: loads assets/uv_test.tga (direct TGA — the asset manager doesn't exist yet)
+// and uploads it so the renderer's textured quad draws.
 #include "platform/platform.h"
 #include "render/renderer.h"
+#include "tga_direct.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -62,7 +65,7 @@ int main(int argc, char** argv) {
     }
 
     PlatformWindowDesc desc;
-    desc.title = "MOBA - sandbox (M2.1)";
+    desc.title = "MOBA - sandbox (M2.2)";
     desc.width = 1280; desc.height = 720;
     desc.resizable = true; desc.fullscreen = false;
 
@@ -71,6 +74,35 @@ int main(int argc, char** argv) {
 
     Renderer* rnd = renderer_create(win);
     if (!rnd) std::printf("sandbox: renderer unavailable (null backend / no Vulkan)\n");
+
+    // M2.2: TGA -> RGBA8 -> GPU. A missing/bad/oversized texture is non-fatal — the
+    // renderer simply keeps drawing without the quad.
+    if (rnd) {
+        // The arena holds BOTH the raw file AND its decoded RGBA8 at once. A 24bpp TGA
+        // (3 B/px) decodes to 4 B/px, so worst-case live bytes ~= 7/3 * file. Cap the
+        // file at 3/8 of the arena (< 3/7, with slack) so a valid-but-huge TGA is
+        // rejected here rather than overrunning the arena's hard abort (platform.h:
+        // an on-disk size must never be able to trigger it).
+        const size_t TEX_ARENA_BYTES = 64u * 1024 * 1024;
+        const size_t TGA_FILE_CAP    = TEX_ARENA_BYTES / 8 * 3;   // ~24 MiB; 24 + 4/3*24 = 56 < 64
+        Arena tex_arena;
+        if (platform_arena_reserve(&tex_arena, TEX_ARENA_BYTES)) {
+            char tga_path[512];
+            std::snprintf(tga_path, sizeof(tga_path), "%s/uv_test.tga", MOBA_ASSET_DIR);
+            PlatformFile file = {};
+            TgaImage img = {};
+            size_t tga_size = 0;
+            if (!platform_file_size(tga_path, &tga_size) || tga_size > TGA_FILE_CAP)
+                std::printf("sandbox: texture missing or oversized: %s\n", tga_path);
+            else if (!platform_file_read(tga_path, arena_allocator(&tex_arena), &file))
+                std::printf("sandbox: texture unreadable: %s\n", tga_path);
+            else if (!tga_decode(file.data, file.size, arena_allocator(&tex_arena), &img))
+                std::printf("sandbox: %s is not a supported TGA\n", tga_path);
+            else if (renderer_upload_texture(rnd, img.width, img.height, img.rgba8))
+                std::printf("sandbox: quad texture loaded (%dx%d from uv_test.tga)\n", img.width, img.height);
+            platform_arena_release(&tex_arena);
+        }
+    }
 
     const uint64_t freq = platform_time_frequency();
     uint64_t prev  = platform_time_ticks();

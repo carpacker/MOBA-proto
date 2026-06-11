@@ -12,3 +12,7 @@ bool renderer_capture(Renderer* r, int fb_width, int fb_height, bool minimized,
     (void)r; (void)fb_width; (void)fb_height; (void)minimized; (void)alloc; (void)out;
     return false;
 }
+bool renderer_upload_texture(Renderer* r, int width, int height, const void* rgba8) {
+    (void)r; (void)width; (void)height; (void)rgba8;
+    return false;
+}

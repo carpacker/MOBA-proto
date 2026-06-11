@@ -21,8 +21,12 @@ add_executable(engine_tests
     math/math_tests.cpp
     containers/container_tests.cpp
     platform/platform_tests.cpp
-    render/render_tests.cpp)
-target_include_directories(engine_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    render/render_tests.cpp
+    tga/tga_tests.cpp
+    ${CMAKE_SOURCE_DIR}/tools/sandbox/src/tga_direct.cpp)   # app-layer decoder under test (M2.2; moves to eng_assets at M4.0)
+target_include_directories(engine_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/tools/sandbox/src)                  # tga_direct.h
 # eng::render is linked for its Vulkan-FREE pieces only (the pipeline-cache blob
 # checker); in CI it is the null backend, so the binary stays headless either way.
 target_link_libraries(engine_tests PRIVATE engine_core_group eng::render moba_warnings moba_options)
@@ -46,5 +50,6 @@ add_test(NAME math        COMMAND engine_tests --suite math)
 add_test(NAME containers  COMMAND engine_tests --suite containers)
 add_test(NAME platform    COMMAND engine_tests --suite platform)  # file I/O (M2.1)
 add_test(NAME render      COMMAND engine_tests --suite render)    # cache-blob checker (M2.1)
+add_test(NAME tga         COMMAND engine_tests --suite tga)       # direct TGA decode (M2.2)
 add_test(NAME det_precise COMMAND det_tests)        # /fp:precise golden hash
 add_test(NAME det_fast    COMMAND det_tests_fastfp) # /fp:fast    golden hash (must match)
