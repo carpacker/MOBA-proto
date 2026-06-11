@@ -2,7 +2,9 @@
 
 A running log of work sessions — what was built, what was decided, what was learned.
 Newest session first. Architectural decisions live in `docs/DECISIONS/` (ADRs); this
-is the narrative record.
+is the narrative record. Session-level retrospectives (process, decision-making, and
+cross-cutting nuance, one level up from per-milestone entries) live in
+[`docs/sessions/`](sessions/).
 
 ---
 
