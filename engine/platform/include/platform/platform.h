@@ -7,10 +7,9 @@
 // (+ platform_input.h, and later platform_vulkan.h). Win32 impl in src/win32/.
 //
 // M0.3 surface: window/loop, high-res clock, OS page allocator, log/fatal.
+// M2.1 adds file read/write (the renderer loads .spv + the pipeline cache).
 // Deferred to their phases (declared canonically in ARCHITECTURE §4.1):
-//   - file I/O into a caller arena (needs core's Allocator)  -> M1.0
-//   - dynamic-library load (hand-loads vulkan-1.dll)         -> Phase 2
-//   - Vulkan surface creation / loader bootstrap             -> Phase 2
+//   - file map/unmap (immutable assets) + asset-root vpaths  -> Phase 4
 //   - UDP sockets, dir-watch                                 -> Phase 6 / later
 
 typedef struct PlatformWindow PlatformWindow;     // opaque, per-backend
@@ -45,6 +44,21 @@ size_t              plat_mem_page_size(void);
 bool platform_arena_reserve     (Arena* out, size_t reserve_bytes);
 bool platform_scratchpad_reserve(ScratchPad* out, size_t each_bytes);
 void platform_arena_release     (Arena*);   // VirtualFree the arena's reservation
+
+// ---- File I/O: caller supplies the allocator (the arena owns the bytes, §4.1) ----
+// Paths are UTF-8. platform_file_read allocates size bytes (16-aligned) from `alloc`
+// and fills `out`; a 0-byte file yields size==0 with a valid (non-null) data pointer.
+// Returns false (out untouched) if the file is missing/unreadable. The caller frees by
+// the allocator's own discipline (arena reset/temp_end — there is no per-file free).
+typedef struct PlatformFile { void* data; size_t size; } PlatformFile;
+// Cheap stat (no open/alloc). Use it to BOUND a read of untrusted/external bytes
+// before pushing into a fixed arena — arena overrun is a hard abort by the M1.0 OOM
+// policy, and an on-disk file's size must never be able to trigger it.
+bool platform_file_size (const char* path, size_t* out_size);
+bool platform_file_read (const char* path, Allocator alloc, PlatformFile* out);
+// Atomic whole-file write: writes path + ".tmp", flushes, then renames over `path`
+// (readers never observe a torn file). Returns false on any failure (tmp removed).
+bool platform_file_write(const char* path, const void* data, size_t size);
 
 // ---- Diagnostics ----
 void platform_log  (const char* fmt, ...);

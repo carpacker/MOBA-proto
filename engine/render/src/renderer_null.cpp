@@ -7,3 +7,8 @@ void      renderer_destroy(Renderer* r)           { (void)r; }
 void      renderer_draw(Renderer* r, int fb_width, int fb_height, bool minimized) {
     (void)r; (void)fb_width; (void)fb_height; (void)minimized;
 }
+bool renderer_capture(Renderer* r, int fb_width, int fb_height, bool minimized,
+                      Allocator alloc, RendererCapture* out) {
+    (void)r; (void)fb_width; (void)fb_height; (void)minimized; (void)alloc; (void)out;
+    return false;
+}

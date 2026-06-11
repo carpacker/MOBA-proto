@@ -411,6 +411,7 @@ size_t              plat_mem_page_size(void);
 // ---- File I/O: caller supplies the allocator (arena owns the bytes) ----
 typedef struct { void* data; size_t size; } PlatformFile;
 struct Allocator;                                                 // fwd; see §6
+bool platform_file_size (const char* vpath, size_t* out_size);    // cheap stat — bound untrusted reads BEFORE pushing into a fixed arena
 bool platform_file_read (const char* vpath, struct Allocator alloc, PlatformFile* out);
 bool platform_file_map  (const char* vpath, PlatformFile* out);   // mmap, read-only, immutable assets
 void platform_file_unmap(PlatformFile*);

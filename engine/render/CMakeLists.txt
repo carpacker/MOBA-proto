@@ -12,12 +12,27 @@ target_link_libraries(eng_render
     PUBLIC  eng::core eng::math eng::platform
     PRIVATE moba_warnings moba_options)
 
+# Vulkan-free pieces compiled into BOTH backends (and unit-tested headlessly).
+target_sources(eng_render PRIVATE src/pipeline_cache_check.cpp)
+
 # Real Vulkan backend when the SDK headers are present; otherwise a null backend so the
 # renderer.h seam still links (CI has no SDK yet). Becomes a hard requirement once the
 # SDK is installed in CI (then drop the null path and make find_package REQUIRED).
 if(TARGET Vulkan::Headers)
     target_sources(eng_render PRIVATE src/vk/vk.cpp src/renderer.cpp)
     target_link_libraries(eng_render PRIVATE Vulkan::Headers)
+
+    # M2.1: offline GLSL -> SPIR-V (ADR-0008). Outputs land in ${CMAKE_BINARY_DIR}/
+    # shaders; the renderer locates them via MOBA_SHADER_DIR at runtime.
+    add_shader_library(shaders SOURCES
+        engine/render/shaders/triangle.vert
+        engine/render/shaders/triangle.frag)
+    add_dependencies(eng_render shaders)
+    # $<CONFIG> matches add_shader_library's per-config output dir, so a Debug binary
+    # always loads -g shaders and a Release binary -O ones (never last-built-wins).
+    target_compile_definitions(eng_render PRIVATE
+        "MOBA_SHADER_DIR=\"${CMAKE_BINARY_DIR}/shaders/$<CONFIG>\"")
+
     message(STATUS "eng_render: Vulkan backend (SDK ${Vulkan_VERSION})")
 else()
     target_sources(eng_render PRIVATE src/renderer_null.cpp)
