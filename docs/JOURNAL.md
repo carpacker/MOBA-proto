@@ -6,6 +6,125 @@ is the narrative record.
 
 ---
 
+## Session 04 — 2026-06-11 — M2.1: the first triangle
+
+**Scope:** M2.1 — the first graphics pipeline: offline SPIR-V (ADR-0008), an on-disk
+pipeline cache, dynamic rendering + synchronization2 as the committed minimum spec
+(new ADR-0012), plus the two enablers the rung needed — the platform **file I/O seam**
+(deferred since M0.3) and the **in-process readback screenshot** from the Session 03
+backlog.
+**Outcome:** **M2.1 complete** in one squash (**PR #8**, branch `9c7644f`): the triangle
+renders **validation-clean** and the proof is a screenshot **the engine captured of
+itself** — red top / green bottom-right / blue bottom-left, exactly the Y-down NDC the
+shader encodes. A 45-agent adversarial review confirmed 5 findings (all fixed pre-merge)
+and refuted 14.
+
+### What was built (PR #8)
+
+| Piece | Detail |
+|---|---|
+| Platform file I/O | `platform_file_read` (into a caller `Allocator`, 16-aligned), `platform_file_write` (atomic `.tmp`+`MoveFileExW`), `platform_file_size` (cheap stat — see gotcha below). ARCHITECTURE §4.1 updated in the same commit. |
+| Shaders | `engine/render/shaders/triangle.{vert,frag}`, verts hardcoded in the shader (`gl_VertexIndex`), compiled by `add_shader_library` → `build/shaders/$<CONFIG>/*.spv`, located via `MOBA_SHADER_DIR`. |
+| ADR-0012 | **Vulkan 1.3 + `dynamicRendering` + `synchronization2` is the hard minimum.** Gated at device *selection* (below-spec devices skipped; clean message if none qualify); both features enabled at device create. No render-pass/sync1 fallback — one barrier vocabulary, ever. |
+| Pipeline | Static registry table (1 entry) + shared empty layout; viewport/scissor dynamic so **resize never rebuilds** (only a surface-format change does); `VkPipelineRenderingCreateInfo` instead of a render pass. |
+| Pipeline cache | Loaded at startup **only after** a Vulkan-free header check (vendor/device/UUID — `pipeline_cache_check.cpp`, unit-tested headlessly); saved atomically at shutdown; size-bounded both directions. |
+| Frame | barrier2 `UNDEFINED→COLOR_ATTACHMENT` (src stage = the acquire-semaphore wait stage) → `vkCmdBeginRendering` (loadOp=CLEAR keeps the animated color) → draw → barrier2 `→PRESENT_SRC` (dst NONE; the semaphore covers visibility) → `vkQueueSubmit2`. |
+| Readback | `renderer_capture()` renders one frame and copies it to a host-visible buffer **between render and present** (a presented image can't be read), waits the frame fence, returns RGBA8. `sandbox --screenshot out.bmp` writes it. |
+| Dispatch | +30 procs across instance/device tiers; all fatal-on-missing since ADR-0012 guarantees 1.3. |
+| Tests | New `platform` suite (9: roundtrip, **the rename-failure half of atomicity**, UTF-8 + invalid-UTF-8 paths, zero-byte, missing-dir, size-stat) and `render` suite (5: cache-blob checker incl. unaligned source). 7 ctest entries total. |
+
+### The adversarial review (5 lenses → 2 skeptics per finding)
+
+**Confirmed & fixed (5):**
+
+1. **Multi-config shader clobber (build, major).** Per-config glslc flags (`-g`/`-O`)
+   wrote the **same** `.spv` path under Ninja Multi-Config → every config switch
+   re-ran glslc and clobbered the other flavor; `MOBA_SHADER_DIR` pointed all binaries
+   at whichever built last. A skeptic proved it had *already happened* from
+   `.ninja_log`'s alternating command hashes. Fixed: outputs + `MOBA_SHADER_DIR` are
+   per-`$<CONFIG>`.
+2. **Oversized cache file = startup abort (seam-arch, major).** The cache is untrusted
+   on-disk input, but it was read straight into the renderer's fixed 16 MiB arena —
+   and arena overrun is an always-on hard abort (M1.0 policy). A >16 MiB file would
+   crash-loop every launch *before* the blob checker ran. Fixed with
+   `platform_file_size` + an 8 MiB bound on load **and** save; verified live with a
+   planted 20 MB blob (logs "oversized — starting empty", then self-heals).
+3. **Atomic-write failure branch untested (tests, major).** Only success paths were
+   covered; a "delete destination, then rename" regression would have shipped green.
+   Fixed: a read-only destination forces `MoveFileExW` to fail → assert original
+   intact, `.tmp` removed, `false` returned.
+4. **Uninitialized `PlatformFile` UB in two tests (tests, minor).** `CHECK` doesn't
+   stop the body and a failed read leaves `out` untouched by contract → later CHECKs
+   read indeterminate memory. Fixed with `= {}`.
+5. **UTF-8 path contract untested (tests, minor).** All test paths were ASCII (same
+   bytes under CP_UTF8/CP_ACP). Fixed: `é測` roundtrip + invalid-UTF-8 rejection.
+
+**Refuted (14)** — including three sync claims (the capture/recreate flow doesn't
+have the claimed staleness; the WSI present-semaphore gap is the accepted M2.0
+recipe), concurrent-process `.tmp` races (single-instance dev tool), and
+`MOBA_SHADER_DIR` non-relocatability (explicitly provisional until Phase 4).
+
+### Key decisions & gotchas
+
+- **First real use of M0.2 scaffolding finds the bugs.** `add_shader_library` was
+  written in M0.2 but never invoked until now — and held two latent defects (the
+  clobber above, plus `$<$<CONFIG:Debug>:-g> $<$<NOT:…>:-O>` leaving an **empty ""
+  argument** in the non-matching config, which glslc read as a second input file:
+  "linking multiple files is not supported"). Single-genex `$<IF:>` fixes the latter.
+- **The arena hard-abort policy is for *budgets*, not external input.** Anything
+  reading an untrusted/on-disk size into a fixed arena must bound it first
+  (`platform_file_size`) — otherwise a file's length becomes a process-kill switch.
+  This distinction (programmer-bug abort vs. expected-failure degrade) is ADR-0009's
+  two-channel rule; the review caught it being violated.
+- **Read back before present, not after.** A presented swapchain image belongs to the
+  presentation engine; `renderer_capture` therefore copies between `CmdEndRendering`
+  and present, inside the same submission the frame fence covers. HOST_COHERENT means
+  the fence wait alone makes the copy host-visible.
+- **sync2 niceties:** `UNDEFINED→COLOR_ATTACHMENT`'s src stage must be
+  `COLOR_ATTACHMENT_OUTPUT` so it chains *after* the acquire semaphore (which waits at
+  that stage); the present handoff uses dst stage `NONE` legally because the signal
+  semaphore (stageMask `ALL_COMMANDS`) provides the visibility.
+- **CRT narrow APIs are ANSI, not UTF-8** — `std::remove()` can't delete a file
+  created via a UTF-8 path; tests clean up with `_wremove`. (Win32 wide APIs +
+  `MB_ERR_INVALID_CHARS` everywhere in the platform impl.)
+- **CHECK-style harnesses keep running after failure** — any out-param read by later
+  CHECKs must be initialized, or the failure path is UB that can eat the diagnostics.
+- Viewing BMPs from the agent session: convert to PNG (System.Drawing one-liner);
+  the Read tool renders PNG natively. The screenshot loop (run → capture → look) is
+  what finally lets the agent *see* the renderer's output — Session 03's blocker.
+
+### Verification
+
+- `/WX` clean on Vulkan + null backends; **7/7 suites green** (gate + pre-push hook +
+  CI matrix on the PR).
+- **Zero validation messages** across 60-frame runs, validation ON.
+- DoD literally: triangle screenshot-verified; shader edit → only that `.spv`
+  regenerated (depfile) → inverted-color capture confirmed → reverted; cache file
+  appears run 1 (12,119 B), **primes run 2** (and grew when the edited shader variant
+  entered it — the cache is demonstrably real).
+- Robustness: 20 MB foreign cache → graceful "starting empty" → atomically replaced
+  with a real cache at shutdown.
+
+### Deferred backlog (carried forward)
+
+- **Interactive M2.0/M2.1 DoD:** zero validation errors across a real resize,
+  minimize/restore, alt-tab (needs a display; paths implemented).
+- Vulkan SDK in CI → `find_package(Vulkan REQUIRED)`, keep the null backend only as
+  the deliberate M2.5 seam-audit backend.
+- Split `plat_mem_*` out of the Win32 window TU; clang-cl/UBSan determinism run;
+  OpenCppCoverage HTML (all from earlier sessions).
+
+### Where we are / next
+
+**Phase 2: M2.0 + M2.1 done.** The engine has a real pipeline path: offline shaders,
+cached pipeline creation, dynamic rendering, sync2 — and can prove its own output with
+a screenshot. **Next: M2.2 — textured quad** (vertex/index buffers via staging, first
+image upload + layout transitions, sampler, descriptor set — the first real GPU memory
+traffic, and the rung the naive `vk_alloc_dedicated` allocator arrives for). Pixels
+come from a hardcoded TGA loader; the asset manager stays out of it until Phase 4.
+
+---
+
 ## Session 03 — 2026-06-06 — Test visualization + Phase 2 begun (M2.0: clear the screen)
 
 **Scope:** Add ways to *see* what the tests/engine do, then begin Phase 2 — raw Vulkan
