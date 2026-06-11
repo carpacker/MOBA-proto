@@ -3,17 +3,18 @@
 A multiplayer online battle arena built **from scratch in C++**, on a custom
 RTS-class game engine.
 
-> 🚧 **Status:** Early development. **Phases 0–1 complete; Phase 2 underway (M2.0 +
-> M2.1 done).** Build spine, ADRs, Win32 window, memory arenas, float/fixed-point
+> 🚧 **Status:** Early development. **Phases 0–1 complete; Phase 2 underway (M2.0 –
+> M2.2 done).** Build spine, ADRs, Win32 window, memory arenas, float/fixed-point
 > math, containers, and a self-registering test harness on CTest + a pre-push gate
 > (determinism golden across `/fp:precise` + `/fp:fast`), plus GitHub Actions CI
 > (Windows MSVC, `/WX`, Debug + Release).
-> **The renderer draws its first triangle:** a hand-loaded raw-Vulkan renderer
-> (ADR-0004) on **dynamic rendering + synchronization2** (the hard minimum spec,
-> ADR-0012) with offline-compiled SPIR-V (ADR-0008), an on-disk pipeline cache, and
-> an in-process readback — `sandbox --screenshot out.bmp` captures what it rendered,
-> **validation-clean** (verified on a GTX 1070). **Next: M2.2 — textured quad**
-> (buffers, image upload, descriptors).
+> **The renderer draws a textured quad:** a hand-loaded raw-Vulkan renderer (ADR-0004)
+> on **dynamic rendering + synchronization2** (the hard minimum spec, ADR-0012) with
+> offline-compiled SPIR-V (ADR-0008), an on-disk pipeline cache, a triangle, and a
+> **textured quad** — vertex/index buffers + an sRGB image uploaded through staging by
+> the naive dedicated allocator, sampled via a `set=1` descriptor. An in-process
+> readback (`sandbox --screenshot out.bmp`) captures what it rendered, **validation-
+> clean** (verified on a GTX 1070). **Next: M2.3 — camera UBO + instanced meshes.**
 > Run it: `build-ci\tools\sandbox\Debug\sandbox.exe`.
 >
 > See [`docs/JOURNAL.md`](docs/JOURNAL.md) for the session log,
@@ -59,9 +60,10 @@ ctest --test-dir build-ci -C Debug --output-on-failure
 ```
 
 Suites are `mem`, `math`, `containers`, `platform` (file I/O), `render` (pipeline-
-cache blob checker — Vulkan-free, runs headlessly), and the determinism golden hash
-built twice (`det_precise` `/fp:precise` + `det_fast` `/fp:fast` — both must match).
-To run one binary directly: `engine_tests.exe --suite math` (or `--filter`, `--list`).
+cache blob checker), `tga` (direct TGA decode) — all Vulkan-free and headless — and
+the determinism golden hash built twice (`det_precise` `/fp:precise` + `det_fast`
+`/fp:fast` — both must match). To run one binary directly: `engine_tests.exe --suite
+math` (or `--filter`, `--list`).
 
 A **pre-push hook** runs the same `/WX` build + `ctest` and blocks the push on red.
 Activate it once per clone (it shells out to `vcvars` so it works from any shell):

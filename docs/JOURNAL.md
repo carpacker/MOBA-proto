@@ -6,6 +6,114 @@ is the narrative record.
 
 ---
 
+## Session 05 — 2026-06-11 — M2.2: the textured quad (first real GPU memory traffic)
+
+**Scope:** M2.2 — vertex/index buffers, an image upload, a sampler, and a descriptor
+set: the first time the engine moves real data to the GPU. Plus the two enablers the
+rung needs — `vk_alloc` Phase 1 (the naive dedicated allocator) and an app-layer direct
+TGA loader (the asset manager doesn't exist until Phase 4).
+**Outcome:** **M2.2 complete** in one squash (**PR #10**, `c62bb3f`): a textured quad
+renders over the M2.1 triangle, **validation-clean**, with pixel-exact UV orientation
+and a bit-exact sRGB round-trip — both confirmed by the engine's own readback
+screenshot. A multi-lens adversarial review confirmed **5 findings (all fixed
+pre-merge)**, including a major one in this session's *own* hardening.
+
+### What was built (PR #10)
+
+| Piece | Detail |
+|---|---|
+| `vk_alloc` Phase 1 | One dedicated `VkDeviceMemory` per resource (`alloc_buffer`/`alloc_image_2d`/`free_*`/`find_memory_type`); live count hard-`ENSURE`d under 3500 (the 4096 `maxMemoryAllocationCount` floor). The M2.1 capture buffer refactored onto it. Buffers/images never share memory → no `bufferImageGranularity`; `HOST_COHERENT` staging → no flush math. |
+| One-shot submits | `begin`/`end_one_shot`: transient cmd buffer + fence wait for startup uploads. Later-frame visibility comes from the `barrier2`s recorded *inside* the one-shot, not the fence. |
+| Quad VB/IB | `DEVICE_LOCAL` via one staging buffer (verts then indices) + `CmdCopyBuffer`×2 + buffer `barrier2`s into `VERTEX_ATTRIBUTE_INPUT`/`INDEX_INPUT`. |
+| `renderer_upload_texture` | `R8G8B8A8_SRGB` `OPTIMAL` image, staging copy, `barrier2`s `UNDEFINED→TRANSFER_DST→SHADER_READ_ONLY`, view, descriptor write. Replace-path device-idles first. **Provisional** single-texture seam → M2.5 unifies into typed handles. |
+| Descriptors | `set=0` empty placeholder + `set=1` combined image sampler (material at set 1 per the roadmap; set 0 reserved so M2.3's per-frame UBO slots in **without renumbering**); one pool/set, one linear sampler. Quad binds only set 1. |
+| Pipeline registry | Grows to 2 entries with per-entry vertex layout (`NONE` vs `POS2_UV2`) + layout kind (`EMPTY` vs `MATERIAL`); `quad.vert`/`quad.frag`. |
+| TGA decoder | App-layer `tools/sandbox/src/tga_direct`: type-2 uncompressed 24/32 bpp, both origins → RGBA8 via a caller `Allocator`; hard-rejects RLE/palettes/16 bpp/right-origin/interleave + truncation (u64-bounded, *before* allocation). `assets/uv_test.tga` (64×64 UV checker, R/G/B/Y corner markers) loaded + uploaded. New headless `tga` suite. |
+| Dispatch | +21 procs (images, samplers, descriptors, copies, indexed draw). |
+
+### The adversarial review (5 lenses → 2 skeptics/finding)
+
+The first run was **crippled by a session-limit cutoff**: the three Vulkan/seam lenses
+(upload-sync, allocator, seam-arch) never ran and their would-be findings defaulted to
+"refuted", so the run reported a misleading *0 confirmed / 8 refuted*. **Resuming** the
+same workflow (cached lenses return instantly; the dead ones run live) produced the real
+result. Lesson: **a review truncated by the session limit is not a clean review** — its
+"refuted" tallies are an artifact, not a verdict; resume before trusting them.
+
+**Confirmed & fixed (5):**
+
+1. **Texture arena budget broken (major) — a bug in this session's own M2.1-style
+   hardening.** The sandbox bounded the *file* at 32 MiB before reading it into a 64 MiB
+   arena — but the raw file **and** its decoded RGBA8 share that arena, and 24 bpp
+   (3 B/px) decodes to 4 B/px, so worst-case live bytes ≈ 7/3 × file. A valid 24 bpp TGA
+   between ~27 and 32 MiB passed the gate then **hard-aborted the arena** — the exact bug
+   class M2.1 fixed for the pipeline cache, re-introduced by a gate that only *looked*
+   like the M2.1 one. Three lenses caught it independently. Fixed by deriving the file
+   cap from the arena size (3/8 < the 3/7 worst case) so the invariant holds by
+   construction.
+2. **(minor)** `renderer_upload_texture` now rejects dims above `maxImageDimension2D`
+   (a `vkCreateImage` valid-usage violation / UB) — the app can't query the limit across
+   the seam, so the check lives in the renderer.
+3. **(minor)** Interleave descriptor bits (`0xC0`) now hard-rejected by the decoder.
+4. **(minor)** Added a 3×2 24 bpp bottom-left decode test: source stride `width*3` is
+   not a multiple of 4, pinning the tight-pack path a `width*4` regression would slip
+   through. A skeptic *proved* the gap by mutation — the bad stride passed the old tests
+   in Release (only Debug's `/RTC1` stack-fill caught it, incidentally).
+5. **(minor)** Doc fix: M4.0 is the runtime parser; the cooker is M4.1.
+
+**Refuted** included a 32-bit `size_t` overflow (x64-unreachable), a TOCTOU file-grow
+window (theoretical for a dev tool reading a committed asset), and the null-backend
+"silent false" path.
+
+### Key decisions & gotchas
+
+- **A fixed-arena size bound must cover every allocation that lands in it, not just the
+  first.** Bounding the input file is necessary but not sufficient when a later decode
+  expands it in the same arena. Derive coupled budget constants from one source so they
+  can't drift (the reviewers' standing complaint, now applied).
+- **`set=0` left deliberately empty.** Reserving the per-frame-UBO slot now means M2.3
+  adds it without recreating the material pipeline layout or renumbering `set=1`.
+- **One-shot upload visibility is device-side, via barriers — the fence is host-side.**
+  `end_one_shot`'s `WaitForFences` only tells the *host* the copy finished; later frame
+  submissions see the data because the `barrier2` into `VERTEX_ATTRIBUTE_INPUT` /
+  `SHADER_READ_ONLY` was recorded inside the one-shot.
+- **TGA is BGR(A) and bottom-left by default.** The decoder swizzles to RGBA and flips
+  rows to top-down; the uploaded image is `*_SRGB`, so `texture()` returns linear and the
+  `*_SRGB` swapchain re-encodes on write — no manual gamma anywhere.
+- **CRT `/RTC1` can mask a missing test.** A stride regression that reads one byte past
+  written data was caught in Debug only because the runtime checks fill the stack with
+  `0xCC`; Release sailed through. Tests that depend on uninitialized-read *values* are
+  not real coverage — pin the packing explicitly.
+
+### Verification
+
+- `/WX` clean on Vulkan + null backends; **8/8 ctest suites green** (new: `tga`).
+- **Zero validation messages** over 60-frame runs, validation ON.
+- DoD: quad renders with correct UVs (pixel-exact R/G/B/Y markers via readback) and
+  bit-exact sRGB round-trip (texture 255/240/32 land identically in the capture); staging
+  round-trip validated; **3 dedicated allocations live** after upload (VB, IB, texture;
+  staging freed). 20 MB-class robustness now lives in the derived cap.
+
+### Deferred backlog (carried forward)
+
+- **Interactive M2.0/M2.1/M2.2 DoD:** zero validation errors across a real resize,
+  minimize/restore, alt-tab (needs a display; paths implemented).
+- Vulkan SDK in CI → `find_package(Vulkan REQUIRED)`, keep the null backend as the
+  deliberate M2.5 seam-audit backend.
+- M2.5 will unify `renderer_upload_texture` (+ mesh creation) into typed handles with
+  deferred-destroy; the provisional single-texture seam folds in there.
+- Split `plat_mem_*` out of the Win32 window TU; clang-cl/UBSan determinism run.
+
+### Where we are / next
+
+**Phase 2: M2.0–M2.2 done.** The engine clears, draws a pipeline triangle, and now
+moves real geometry + a texture to the GPU through staging, with a working (if naive)
+allocator and descriptor set. **Next: M2.3 — camera UBO + instanced meshes** (the first
+"MOBA-looking" frame: a per-frame view/proj UBO at the reserved `set=0`, a per-instance
+buffer, and 500+ instances of one mesh in a single batched `vkCmdDrawIndexed`).
+
+---
+
 ## Session 04 — 2026-06-11 — M2.1: the first triangle
 
 **Scope:** M2.1 — the first graphics pipeline: offline SPIR-V (ADR-0008), an on-disk
