@@ -103,6 +103,27 @@ struct Vk {
     PFN_vkMapMemory                   MapMemory;
     PFN_vkUnmapMemory                 UnmapMemory;
     PFN_vkCmdCopyImageToBuffer        CmdCopyImageToBuffer;
+
+    // M2.2: textured quad — images, samplers, descriptors, staging copies, indexed draw.
+    PFN_vkCreateImage                 CreateImage;
+    PFN_vkDestroyImage                DestroyImage;
+    PFN_vkGetImageMemoryRequirements  GetImageMemoryRequirements;
+    PFN_vkBindImageMemory             BindImageMemory;
+    PFN_vkCreateSampler               CreateSampler;
+    PFN_vkDestroySampler              DestroySampler;
+    PFN_vkCreateDescriptorSetLayout   CreateDescriptorSetLayout;
+    PFN_vkDestroyDescriptorSetLayout  DestroyDescriptorSetLayout;
+    PFN_vkCreateDescriptorPool        CreateDescriptorPool;
+    PFN_vkDestroyDescriptorPool       DestroyDescriptorPool;
+    PFN_vkAllocateDescriptorSets      AllocateDescriptorSets;
+    PFN_vkUpdateDescriptorSets        UpdateDescriptorSets;
+    PFN_vkFreeCommandBuffers          FreeCommandBuffers;
+    PFN_vkCmdCopyBuffer               CmdCopyBuffer;
+    PFN_vkCmdCopyBufferToImage        CmdCopyBufferToImage;
+    PFN_vkCmdBindVertexBuffers        CmdBindVertexBuffers;
+    PFN_vkCmdBindIndexBuffer          CmdBindIndexBuffer;
+    PFN_vkCmdBindDescriptorSets       CmdBindDescriptorSets;
+    PFN_vkCmdDrawIndexed              CmdDrawIndexed;
 };
 
 // Resolve the global tier from the platform loader. Fatal on a missing core proc.

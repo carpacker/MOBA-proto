@@ -106,5 +106,26 @@ bool vk_load_device(Vk* vk, VkDevice device) {
     VK_DEVICE(MapMemory,                   vkMapMemory);
     VK_DEVICE(UnmapMemory,                 vkUnmapMemory);
     VK_DEVICE(CmdCopyImageToBuffer,        vkCmdCopyImageToBuffer);
+
+    // M2.2: textured quad.
+    VK_DEVICE(CreateImage,                vkCreateImage);
+    VK_DEVICE(DestroyImage,               vkDestroyImage);
+    VK_DEVICE(GetImageMemoryRequirements, vkGetImageMemoryRequirements);
+    VK_DEVICE(BindImageMemory,            vkBindImageMemory);
+    VK_DEVICE(CreateSampler,              vkCreateSampler);
+    VK_DEVICE(DestroySampler,             vkDestroySampler);
+    VK_DEVICE(CreateDescriptorSetLayout,  vkCreateDescriptorSetLayout);
+    VK_DEVICE(DestroyDescriptorSetLayout, vkDestroyDescriptorSetLayout);
+    VK_DEVICE(CreateDescriptorPool,       vkCreateDescriptorPool);
+    VK_DEVICE(DestroyDescriptorPool,      vkDestroyDescriptorPool);
+    VK_DEVICE(AllocateDescriptorSets,     vkAllocateDescriptorSets);
+    VK_DEVICE(UpdateDescriptorSets,       vkUpdateDescriptorSets);
+    VK_DEVICE(FreeCommandBuffers,         vkFreeCommandBuffers);
+    VK_DEVICE(CmdCopyBuffer,              vkCmdCopyBuffer);
+    VK_DEVICE(CmdCopyBufferToImage,       vkCmdCopyBufferToImage);
+    VK_DEVICE(CmdBindVertexBuffers,       vkCmdBindVertexBuffers);
+    VK_DEVICE(CmdBindIndexBuffer,         vkCmdBindIndexBuffer);
+    VK_DEVICE(CmdBindDescriptorSets,      vkCmdBindDescriptorSets);
+    VK_DEVICE(CmdDrawIndexed,             vkCmdDrawIndexed);
     return true;
 }
